@@ -1,0 +1,6 @@
+{
+  "name": "Ramses AI",
+  "description": "Official Ask Ramses AI (اسأل رمسيس) - Royal wisdom, multimodal analysis, voice dialogue, and search grounding.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

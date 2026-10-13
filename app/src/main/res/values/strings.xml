@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">Ramses AI</string>
+    <string name="app_subtitle">اسأل رمسيس</string>
+    <string name="ask_ramses_placeholder">...اسأل رمسيس</string>
+    <string name="voice_call_title">مكالمة مع الملك رمسيس</string>
+    <string name="multimodal_prompt">حلل هذه القطعة الأثرية أو الوثيقة من منظورك الملكي والتاريخي</string>
+</resources>

@@ -22,6 +22,6 @@ dependencyResolutionManagement {
   }
 }
 
-rootProject.name = "Ramses AI"
+rootProject.name = "Ask Rameses"
 
 include(":app")

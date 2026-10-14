@@ -122,6 +122,7 @@ fun RamsesApp(viewModel: RamsesViewModel) {
     val sessions by viewModel.sessions.collectAsStateWithLifecycle()
     val currentSessionId by viewModel.currentSessionId.collectAsStateWithLifecycle()
     val ragDocuments by viewModel.ragDocuments.collectAsStateWithLifecycle()
+    val appLanguage by viewModel.appLanguage.collectAsStateWithLifecycle()
 
     val isGeminiLiveActive by viewModel.isGeminiLiveActive.collectAsStateWithLifecycle()
     val voiceCallState by viewModel.voiceCallState.collectAsStateWithLifecycle()
@@ -151,7 +152,7 @@ fun RamsesApp(viewModel: RamsesViewModel) {
         if (isGranted) {
             viewModel.startGeminiLiveCall()
         } else {
-            Toast.makeText(context, "يلزم إذن الميكروفون للمكالمة الصوتية المباشرة (Gemini Live)", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "Audio permission required for Gemini Live call", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -162,7 +163,7 @@ fun RamsesApp(viewModel: RamsesViewModel) {
         if (isGranted) {
             viewModel.startVoiceTyping()
         } else {
-            Toast.makeText(context, "يلزم إذن الميكروفون للإملاء الصوتي", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "Audio permission required for voice typing", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -182,9 +183,9 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                     MediaStore.Images.Media.getBitmap(context.contentResolver, uri)
                 }
                 viewModel.attachImage(bitmap)
-                Toast.makeText(context, "تم إرفاق الصورة للتحليل", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "Image attached for analysis", Toast.LENGTH_SHORT).show()
             } catch (e: Exception) {
-                Toast.makeText(context, "تعذر قراءة الصورة: ${e.message}", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "Could not load image: ${e.message}", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -196,8 +197,11 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                 userProfile = userProfile,
                 sessions = sessions,
                 currentSessionId = currentSessionId,
+                appLanguage = appLanguage,
+                onToggleLanguage = { viewModel.toggleLanguage() },
                 onSelectSession = { sid -> viewModel.switchSession(sid) },
                 onDeleteSession = { sid -> viewModel.deleteSession(sid) },
+                onClearAllChats = { viewModel.clearAllConversations() },
                 isSearchGroundingEnabled = isSearchGroundingEnabled,
                 onToggleSearchGrounding = { viewModel.toggleSearchGrounding() },
                 onOpenAuthDialog = { showAuthDialog = true },
@@ -226,9 +230,11 @@ fun RamsesApp(viewModel: RamsesViewModel) {
             Scaffold(
                 containerColor = Color.Transparent,
                 topBar = {
-                    // Upper header with Ramses icon, title Ask Ramses, and personal API key shortcut
+                    // Upper header with Ramses icon, title Ask Rameses, language switch, and personal API key shortcut
                     RamsesHeader(
                         hasPersonalApiKey = customApiKey.isNotBlank(),
+                        appLanguage = appLanguage,
+                        onToggleLanguage = { viewModel.toggleLanguage() },
                         onProfileClick = { showAuthDialog = true },
                         onApiKeyClick = { showApiKeyDialog = true },
                         onMenuClick = {
@@ -280,7 +286,8 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                         },
                         selectedImageBitmap = selectedImageBitmap,
                         onClearAttachedImage = { viewModel.clearAttachedImage() },
-                        isListeningVoiceTyping = isVoiceTyping
+                        isListeningVoiceTyping = isVoiceTyping,
+                        appLanguage = appLanguage
                     )
                 }
             ) { innerPadding ->
@@ -330,7 +337,7 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                             Spacer(modifier = Modifier.height(16.dp))
 
                             Text(
-                                text = "ASK RAMSES",
+                                text = "ASK RAMESES",
                                 fontFamily = CinzelFontFamily,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 24.sp,
@@ -339,7 +346,7 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                             )
 
                             Text(
-                                text = "اسأل رمسيس",
+                                text = if (appLanguage == com.example.data.model.AppLanguage.ARABIC) "اسأل رمسيس" else "Royal AI Wisdom",
                                 fontFamily = AmiriFontFamily,
                                 fontSize = 16.sp,
                                 color = RoyalGoldLight
@@ -453,7 +460,7 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                                                 )
                                                 Spacer(modifier = Modifier.width(10.dp))
                                                 Text(
-                                                    text = if (isSearchGroundingEnabled) "رمسيس يبحث ويوثق الحكمة..." else "رمسيس يفكر...",
+                                                    text = com.example.data.model.AppStrings.thinkingMessage(appLanguage, isSearchGroundingEnabled),
                                                     fontFamily = AmiriFontFamily,
                                                     fontSize = 14.sp,
                                                     color = RoyalGold
@@ -477,9 +484,12 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                     lastTranscript = currentVoiceTranscript,
                     lastRamsesSpeech = lastRamsesMessage,
                     rmsDb = liveRmsDb,
+                    appLanguage = appLanguage,
+                    onToggleLanguage = { viewModel.toggleLanguage() },
                     onStartListening = { viewModel.startListeningForGeminiLive() },
                     onStopListening = { viewModel.stopListeningForGeminiLive() },
                     onStopSpeaking = { viewModel.stopSpeaking() },
+                    onQuickPromptClick = { prompt -> viewModel.sendMessage(prompt, isVoice = true) },
                     onEndCall = { viewModel.endGeminiLiveCall() }
                 )
             }

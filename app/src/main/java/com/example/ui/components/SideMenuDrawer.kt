@@ -21,14 +21,15 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.AddComment
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -50,6 +51,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
+import com.example.data.model.AppLanguage
+import com.example.data.model.AppStrings
 import com.example.data.model.ChatSession
 import com.example.data.model.UserProfile
 import com.example.ui.theme.AmiriFontFamily
@@ -119,8 +122,11 @@ fun SideMenuDrawer(
     userProfile: UserProfile,
     sessions: List<ChatSession>,
     currentSessionId: String,
+    appLanguage: AppLanguage = AppLanguage.ARABIC,
+    onToggleLanguage: () -> Unit,
     onSelectSession: (String) -> Unit,
     onDeleteSession: (String) -> Unit,
+    onClearAllChats: () -> Unit,
     isSearchGroundingEnabled: Boolean,
     onToggleSearchGrounding: () -> Unit,
     onOpenAuthDialog: () -> Unit,
@@ -152,13 +158,13 @@ fun SideMenuDrawer(
                 ) {
                     Icon(
                         imageVector = Icons.Default.Close,
-                        contentDescription = "إغلاق القائمة",
+                        contentDescription = "Close",
                         tint = TextSecondary
                     )
                 }
 
                 Text(
-                    text = "القائمة الملكية",
+                    text = if (appLanguage == AppLanguage.ARABIC) "القائمة الملكية" else "Royal Menu",
                     fontFamily = CinzelFontFamily,
                     fontWeight = FontWeight.Bold,
                     fontSize = 18.sp,
@@ -194,14 +200,14 @@ fun SideMenuDrawer(
                     Spacer(modifier = Modifier.width(10.dp))
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = if (userProfile.isSignedIn) userProfile.displayName else "تسجيل الدخول",
+                            text = if (userProfile.isSignedIn) userProfile.displayName else (if (appLanguage == AppLanguage.ARABIC) "تسجيل الدخول" else "Sign In"),
                             fontFamily = AmiriFontFamily,
                             fontWeight = FontWeight.Bold,
                             fontSize = 15.sp,
                             color = TextPrimary
                         )
                         Text(
-                            text = if (userProfile.isSignedIn) (userProfile.email ?: "متصل") else "Google • Apple",
+                            text = if (userProfile.isSignedIn) (userProfile.email ?: "Active") else "Google • Apple",
                             fontFamily = AmiriFontFamily,
                             fontSize = 12.sp,
                             color = if (userProfile.isSignedIn) Color(0xFF10B981) else EgyptianCyan
@@ -211,15 +217,20 @@ fun SideMenuDrawer(
             }
 
             Spacer(modifier = Modifier.height(12.dp))
-
             HorizontalDivider(color = Color.White.copy(alpha = 0.1f))
-
             Spacer(modifier = Modifier.height(8.dp))
 
             // Main Actions
             DrawerMenuItem(
+                icon = Icons.Default.Language,
+                title = if (appLanguage == AppLanguage.ARABIC) "اللغة / Language" else "Language / اللغة",
+                subtitle = if (appLanguage == AppLanguage.ARABIC) "العربية (انقر للتبديل إلى English)" else "English (Tap to switch to العربية)",
+                onClick = onToggleLanguage
+            )
+
+            DrawerMenuItem(
                 icon = Icons.Default.AddComment,
-                title = "بدء محادثة جديدة",
+                title = AppStrings.newSession(appLanguage),
                 onClick = {
                     onCloseDrawer()
                     onNewChatClick()
@@ -227,19 +238,9 @@ fun SideMenuDrawer(
             )
 
             DrawerMenuItem(
-                icon = Icons.Default.Description,
-                title = "قاعدة المعرفة والـ RAG",
-                subtitle = "إضافة وثائق ومعلومات مخصصة",
-                onClick = {
-                    onCloseDrawer()
-                    onOpenRagDialog()
-                }
-            )
-
-            DrawerMenuItem(
                 icon = Icons.Default.Phone,
-                title = "مكالمة صوتية (Gemini Live)",
-                subtitle = "حوار صوتي مباشر",
+                title = AppStrings.drawerVoiceCall(appLanguage),
+                subtitle = if (appLanguage == AppLanguage.ARABIC) "محادثة صوتية مستمرة فائقة السرعة" else "Continuous ultra-fast live dialogue",
                 onClick = {
                     onCloseDrawer()
                     onVoiceCallClick()
@@ -247,9 +248,29 @@ fun SideMenuDrawer(
             )
 
             DrawerMenuItem(
+                icon = Icons.Default.Description,
+                title = AppStrings.drawerKnowledge(appLanguage),
+                subtitle = if (appLanguage == AppLanguage.ARABIC) "تزويد رمسيس بملفات ووثائق تاريخية" else "Feed Rameses historical records",
+                onClick = {
+                    onCloseDrawer()
+                    onOpenRagDialog()
+                }
+            )
+
+            DrawerMenuItem(
+                icon = Icons.Default.Key,
+                title = AppStrings.drawerKey(appLanguage),
+                subtitle = if (appLanguage == AppLanguage.ARABIC) "1.5M توكن مجاناً لكل مستخدم" else "1.5M free tokens per user",
+                onClick = {
+                    onCloseDrawer()
+                    onOpenApiKeyDialog()
+                }
+            )
+
+            DrawerMenuItem(
                 icon = Icons.Default.AutoAwesome,
-                title = "البحث المباشر (Google Search)",
-                subtitle = "توثيق حي للحقائق",
+                title = if (appLanguage == AppLanguage.ARABIC) "البحث المباشر (Google Search)" else "Live Web Search (Google)",
+                subtitle = if (isSearchGroundingEnabled) AppStrings.searchGroundingEnabled(appLanguage) else AppStrings.searchGroundingDisabled(appLanguage),
                 onClick = onToggleSearchGrounding,
                 trailing = {
                     Switch(
@@ -263,28 +284,39 @@ fun SideMenuDrawer(
                 }
             )
 
-            DrawerMenuItem(
-                icon = Icons.Default.Key,
-                title = "إعدادات المفتاح والنافذة (~1.5M)",
-                onClick = {
-                    onCloseDrawer()
-                    onOpenApiKeyDialog()
-                }
-            )
-
             Spacer(modifier = Modifier.height(8.dp))
             HorizontalDivider(color = Color.White.copy(alpha = 0.1f))
             Spacer(modifier = Modifier.height(8.dp))
 
             // Chat History Section
-            Text(
-                text = "سجل المحادثات السابقة:",
-                fontFamily = AmiriFontFamily,
-                fontWeight = FontWeight.Bold,
-                fontSize = 13.sp,
-                color = RoyalGoldLight,
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = if (appLanguage == AppLanguage.ARABIC) "سجل المحادثات:" else "Chat History:",
+                    fontFamily = AmiriFontFamily,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp,
+                    color = RoyalGoldLight,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                )
+
+                if (sessions.isNotEmpty()) {
+                    IconButton(
+                        onClick = onClearAllChats,
+                        modifier = Modifier.size(28.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.DeleteSweep,
+                            contentDescription = AppStrings.clearAllChats(appLanguage),
+                            tint = TextSecondary.copy(alpha = 0.7f),
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+            }
 
             LazyColumn(
                 modifier = Modifier
@@ -334,7 +366,7 @@ fun SideMenuDrawer(
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Delete,
-                                contentDescription = "حذف المحادثة",
+                                contentDescription = "Delete",
                                 tint = TextSecondary.copy(alpha = 0.6f),
                                 modifier = Modifier.size(14.dp)
                             )
@@ -351,7 +383,7 @@ fun SideMenuDrawer(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
-                    text = "اسأل رمسيس • ASK RAMSES",
+                    text = "ASK RAMESES • اسأل رمسيس",
                     fontFamily = CinzelFontFamily,
                     fontWeight = FontWeight.Bold,
                     fontSize = 13.sp,

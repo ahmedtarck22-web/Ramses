@@ -3,10 +3,12 @@ package com.example.ui.viewmodel
 import android.app.Application
 import android.content.Context
 import android.graphics.Bitmap
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.api.GeminiApiClient
 import com.example.data.db.AppDatabase
+import com.example.data.model.AppLanguage
 import com.example.data.model.AuthProvider
 import com.example.data.model.ChatMessage
 import com.example.data.model.ChatMessageEntity
@@ -17,6 +19,8 @@ import com.example.data.model.UserProfile
 import com.example.data.model.VoiceCallState
 import com.example.service.SpeechRecognizerHelper
 import com.example.service.TextToSpeechHelper
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -35,6 +39,12 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
 
     val ttsHelper = TextToSpeechHelper(application)
     val speechHelper = SpeechRecognizerHelper(application)
+
+    // Language setting (Arabic / English)
+    private val _appLanguage = MutableStateFlow(
+        if (prefs.getString("app_language", "AR") == "EN") AppLanguage.ENGLISH else AppLanguage.ARABIC
+    )
+    val appLanguage: StateFlow<AppLanguage> = _appLanguage.asStateFlow()
 
     // Current Chat Session
     private val _currentSessionId = MutableStateFlow(
@@ -76,7 +86,7 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
     private val _currentVoiceTranscript = MutableStateFlow("")
     val currentVoiceTranscript: StateFlow<String> = _currentVoiceTranscript.asStateFlow()
 
-    // Voice typing mode (Mic button)
+    // Voice typing mode (Mic button in input bar)
     private val _isVoiceTyping = MutableStateFlow(false)
     val isVoiceTyping: StateFlow<Boolean> = _isVoiceTyping.asStateFlow()
 
@@ -95,15 +105,16 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
     )
     val userProfile: StateFlow<UserProfile> = _userProfile.asStateFlow()
 
+    private var messageCollectorJob: Job? = null
+
     init {
         _customApiKey.value = prefs.getString("custom_gemini_key", "") ?: ""
         _isSearchGroundingEnabled.value = prefs.getBoolean("search_grounding", false)
 
-        // Seed default RAG knowledge documents if empty
         viewModelScope.launch {
             seedDefaultRagDocuments()
             ensureCurrentSessionExists(_currentSessionId.value)
-            loadMessagesForSession(_currentSessionId.value)
+            observeMessagesForSession(_currentSessionId.value)
         }
 
         // Wire TTS state to Voice Call state
@@ -112,8 +123,6 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
                 if (_isGeminiLiveActive.value) {
                     if (speaking) {
                         _voiceCallState.value = VoiceCallState.SPEAKING
-                    } else if (_voiceCallState.value == VoiceCallState.SPEAKING) {
-                        _voiceCallState.value = VoiceCallState.IDLE
                     }
                 }
             }
@@ -132,20 +141,51 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
             }
         }
 
-        speechHelper.onErrorOccurred = { _ ->
+        speechHelper.onEndOfSpeechDetected = {
+            if (_isGeminiLiveActive.value && _voiceCallState.value == VoiceCallState.LISTENING) {
+                _voiceCallState.value = VoiceCallState.THINKING
+            }
+        }
+
+        speechHelper.onErrorOccurred = { errorMsg, errorCode ->
+            Log.d("RamsesVM", "Speech error: $errorMsg (code $errorCode)")
             if (_isVoiceTyping.value) {
                 _isVoiceTyping.value = false
             }
             if (_isGeminiLiveActive.value) {
-                _voiceCallState.value = VoiceCallState.IDLE
+                // If the error was just no speech or timeout, stay ready and restart listening
+                viewModelScope.launch {
+                    delay(400)
+                    if (_isGeminiLiveActive.value && _voiceCallState.value != VoiceCallState.SPEAKING && _voiceCallState.value != VoiceCallState.THINKING) {
+                        _voiceCallState.value = VoiceCallState.LISTENING
+                        val langCode = if (_appLanguage.value == AppLanguage.ENGLISH) "en-US" else "ar-EG"
+                        speechHelper.startListening(langCode)
+                    }
+                }
             }
         }
     }
 
+    fun setLanguage(lang: AppLanguage) {
+        _appLanguage.value = lang
+        prefs.edit().putString("app_language", if (lang == AppLanguage.ENGLISH) "EN" else "AR").apply()
+        // If voice call is active, restart speech recognizer in chosen language
+        if (_isGeminiLiveActive.value && _voiceCallState.value == VoiceCallState.LISTENING) {
+            val langCode = if (lang == AppLanguage.ENGLISH) "en-US" else "ar-EG"
+            speechHelper.startListening(langCode)
+        }
+    }
+
+    fun toggleLanguage() {
+        val next = if (_appLanguage.value == AppLanguage.ARABIC) AppLanguage.ENGLISH else AppLanguage.ARABIC
+        setLanguage(next)
+    }
+
     private suspend fun ensureCurrentSessionExists(sessionId: String) {
+        val sessionTitle = if (_appLanguage.value == AppLanguage.ARABIC) "محادثة مع رمسيس" else "Chat with Rameses"
         val session = ChatSession(
             id = sessionId,
-            title = "محادثة مع رمسيس",
+            title = sessionTitle,
             createdAt = System.currentTimeMillis(),
             updatedAt = System.currentTimeMillis()
         )
@@ -153,8 +193,9 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
         prefs.edit().putString("current_session_id", sessionId).apply()
     }
 
-    private fun loadMessagesForSession(sessionId: String) {
-        viewModelScope.launch {
+    private fun observeMessagesForSession(sessionId: String) {
+        messageCollectorJob?.cancel()
+        messageCollectorJob = viewModelScope.launch {
             chatDao.getMessagesForSession(sessionId).collect { entities ->
                 _messages.value = entities.map { entity ->
                     ChatMessage(
@@ -175,7 +216,7 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
         if (existing.isEmpty()) {
             val doc1 = RagDocument(
                 title = "معاهدة السلام المصرية الحيثية (أول معاهدة سلام في التاريخ)",
-                content = "أُبرمت في عهد الملك رمسيس مع الملك الحيثي خاتوسيلي الثالث بعد معركة قادش عام 1259 ق.م، ونصت على إنهاء الحرب وإقامة حلف دفاعي مشترك وتبادل الأسرى ونُقشت باللغتين المصرية الهيروغليفية والأكادية المسمارية.",
+                content = "أُبرمت في عهد الملك رمسيس الثاني مع الملك الحيثي خاتوسيلي الثالث بعد معركة قادش عام 1259 ق.م، ونصت على إنهاء الحرب وإقامة حلف دفاعي مشترك وتبادل الأسرى ونُقشت باللغتين المصرية الهيروغليفية والأكادية المسمارية.",
                 category = "تاريخ ومعاهدات"
             )
             val doc2 = RagDocument(
@@ -207,9 +248,9 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    fun toggleRagDocument(doc: RagDocument) {
+    fun toggleRagDocument(document: RagDocument) {
         viewModelScope.launch {
-            ragDao.updateDocument(doc.copy(isEnabled = !doc.isEnabled))
+            ragDao.updateDocument(document.copy(isEnabled = !document.isEnabled))
         }
     }
 
@@ -219,23 +260,23 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    // --- Chat Session Management ---
+    // --- Session Management ---
     fun startNewSession() {
+        val newId = UUID.randomUUID().toString()
+        _currentSessionId.value = newId
         viewModelScope.launch {
-            val newId = UUID.randomUUID().toString()
-            _currentSessionId.value = newId
             ensureCurrentSessionExists(newId)
-            loadMessagesForSession(newId)
-            ttsHelper.stop()
+            observeMessagesForSession(newId)
         }
     }
 
-    fun switchSession(sessionId: String) {
+    fun selectSession(sessionId: String) {
         _currentSessionId.value = sessionId
         prefs.edit().putString("current_session_id", sessionId).apply()
-        loadMessagesForSession(sessionId)
-        ttsHelper.stop()
+        observeMessagesForSession(sessionId)
     }
+
+    fun switchSession(sessionId: String) = selectSession(sessionId)
 
     fun deleteSession(sessionId: String) {
         viewModelScope.launch {
@@ -247,20 +288,30 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun clearAllConversations() {
+        viewModelScope.launch {
+            chatDao.clearAllMessages()
+            chatDao.clearAllSessions()
+            startNewSession()
+        }
+    }
+
     fun deleteMessage(messageId: String) {
         viewModelScope.launch {
             chatDao.deleteMessage(messageId)
         }
     }
 
-    // --- Message Sending ---
+    // --- High-Speed Message Sending (with Real-Time Streaming) ---
     fun sendMessage(promptText: String, isVoice: Boolean = false) {
         val trimmed = promptText.trim()
         val image = _selectedImageBitmap.value
         if (trimmed.isEmpty() && image == null) return
 
         val sessionId = _currentSessionId.value
-        val userText = trimmed.ifEmpty { "حلل هذه الصورة الملكية" }
+        val userText = trimmed.ifEmpty {
+            if (_appLanguage.value == AppLanguage.ARABIC) "حلل هذه الصورة الملكية" else "Analyze this royal image"
+        }
 
         // Save User Message to Database
         val userEntity = ChatMessageEntity(
@@ -288,44 +339,72 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
         }
 
         viewModelScope.launch {
-            // Fetch active RAG context documents
-            val activeRagDocs = ragDao.getActiveDocuments()
+            val tempRamsesId = UUID.randomUUID().toString()
+            val placeholderEntity = ChatMessageEntity(
+                id = tempRamsesId,
+                sessionId = sessionId,
+                sender = "RAMSES",
+                text = "",
+                isVoiceResponse = isVoice,
+                isError = false
+            )
 
-            val result = geminiClient.generateRamsesResponse(
+            // Insert placeholder so Compose updates immediately
+            chatDao.insertMessage(placeholderEntity)
+
+            val activeRagDocs = ragDao.getActiveDocuments()
+            var currentLiveChunk = ""
+
+            val result = geminiClient.streamRamsesResponse(
                 prompt = userText,
-                history = _messages.value,
+                history = _messages.value.filter { it.id != tempRamsesId },
                 imageBitmap = image,
                 enableSearchGrounding = _isSearchGroundingEnabled.value,
                 isVoiceCall = isVoice,
                 customApiKey = _customApiKey.value,
-                ragContext = activeRagDocs
+                ragContext = activeRagDocs,
+                appLanguage = _appLanguage.value,
+                onChunk = { chunk ->
+                    currentLiveChunk = chunk
+                    chatDao.updateMessage(
+                        placeholderEntity.copy(
+                            text = chunk,
+                            isError = false
+                        )
+                    )
+                }
             )
 
-            // Save Ramses Message to Database
-            val ramsesEntity = ChatMessageEntity(
-                sessionId = sessionId,
-                sender = "RAMSES",
-                text = result.text,
-                isVoiceResponse = isVoice,
+            val finalText = if (result.text.isNotBlank()) result.text else currentLiveChunk
+            val finalEntity = placeholderEntity.copy(
+                text = finalText,
                 isError = result.isError
             )
-            chatDao.insertMessage(ramsesEntity)
+            chatDao.updateMessage(finalEntity)
 
             _isLoading.value = false
 
             if (isVoice) {
                 _voiceCallState.value = VoiceCallState.SPEAKING
-                ttsHelper.speak(result.text)
+                val langTag = if (_appLanguage.value == AppLanguage.ENGLISH) "en-US" else "ar-EG"
+                ttsHelper.speak(finalText, languageCode = langTag) {
+                    // Continuous Live conversation loop: resume listening once speech concludes
+                    if (_isGeminiLiveActive.value) {
+                        _voiceCallState.value = VoiceCallState.LISTENING
+                        speechHelper.startListening(langTag)
+                    }
+                }
             }
         }
     }
 
-    // --- Voice Typing (Mic Button) ---
+    // --- Voice Typing (Mic Button in Chat) ---
     fun startVoiceTyping() {
         if (!_isVoiceTyping.value) {
             _isVoiceTyping.value = true
             ttsHelper.stop()
-            speechHelper.startListening()
+            val langTag = if (_appLanguage.value == AppLanguage.ENGLISH) "en-US" else "ar-EG"
+            speechHelper.startListening(langTag)
         }
     }
 
@@ -339,9 +418,11 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
     // --- Voice Call (Gemini Live) ---
     fun startGeminiLiveCall() {
         _isGeminiLiveActive.value = true
-        _voiceCallState.value = VoiceCallState.IDLE
+        _voiceCallState.value = VoiceCallState.LISTENING
+        _currentVoiceTranscript.value = ""
         ttsHelper.stop()
-        speechHelper.stopListening()
+        val langTag = if (_appLanguage.value == AppLanguage.ENGLISH) "en-US" else "ar-EG"
+        speechHelper.startListening(langTag)
     }
 
     fun endGeminiLiveCall() {
@@ -352,11 +433,10 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun startListeningForGeminiLive() {
-        if (_voiceCallState.value != VoiceCallState.LISTENING) {
-            _voiceCallState.value = VoiceCallState.LISTENING
-            ttsHelper.stop()
-            speechHelper.startListening()
-        }
+        _voiceCallState.value = VoiceCallState.LISTENING
+        ttsHelper.stop()
+        val langTag = if (_appLanguage.value == AppLanguage.ENGLISH) "en-US" else "ar-EG"
+        speechHelper.startListening(langTag)
     }
 
     fun stopListeningForGeminiLive() {
@@ -382,7 +462,8 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun speakMessage(text: String) {
-        ttsHelper.speak(text)
+        val langTag = if (_appLanguage.value == AppLanguage.ENGLISH) "en-US" else "ar-EG"
+        ttsHelper.speak(text, languageCode = langTag)
     }
 
     fun stopSpeaking() {
@@ -410,7 +491,7 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
             .apply()
     }
 
-    fun signInWithApple(email: String = "ramses.user@icloud.com", name: String = "مستخدم Apple") {
+    fun signInWithApple(email: String = "ramses.user@icloud.com", name: String = "Apple User") {
         val profile = UserProfile(
             email = email,
             displayName = name,
@@ -429,14 +510,14 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
     fun signOut() {
         val guest = UserProfile(
             email = null,
-            displayName = "زائر ملكي",
+            displayName = if (_appLanguage.value == AppLanguage.ARABIC) "زائر ملكي" else "Royal Guest",
             provider = AuthProvider.GUEST,
             isSignedIn = false
         )
         _userProfile.value = guest
         prefs.edit()
             .remove("user_email")
-            .putString("user_display_name", "زائر ملكي")
+            .putString("user_display_name", guest.displayName)
             .putString("user_provider", "GUEST")
             .putBoolean("user_is_signed_in", false)
             .apply()
@@ -444,6 +525,7 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
 
     override fun onCleared() {
         super.onCleared()
+        messageCollectorJob?.cancel()
         ttsHelper.shutdown()
         speechHelper.stopListening()
     }

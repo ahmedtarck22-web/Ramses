@@ -67,6 +67,7 @@ fun RamsesInputBar(
     selectedImageBitmap: Bitmap?,
     onClearAttachedImage: () -> Unit,
     isListeningVoiceTyping: Boolean = false,
+    appLanguage: com.example.data.model.AppLanguage = com.example.data.model.AppLanguage.ARABIC,
     modifier: Modifier = Modifier
 ) {
     val focusManager = LocalFocusManager.current
@@ -178,9 +179,13 @@ fun RamsesInputBar(
                 ) {
                     if (inputText.isEmpty()) {
                         Text(
-                            text = if (isListeningVoiceTyping) "استمع لصوتك الآن..." else "...اسأل رمسيس",
+                            text = if (isListeningVoiceTyping) {
+                                if (appLanguage == com.example.data.model.AppLanguage.ARABIC) "استمع لصوتك الآن..." else "Listening to your voice..."
+                            } else {
+                                com.example.data.model.AppStrings.inputPlaceholder(appLanguage)
+                            },
                             fontFamily = AmiriFontFamily,
-                            fontSize = 16.sp,
+                            fontSize = 15.sp,
                             color = if (isListeningVoiceTyping) EgyptianCyan.copy(alpha = 0.85f) else Color.White.copy(alpha = 0.4f)
                         )
                     }

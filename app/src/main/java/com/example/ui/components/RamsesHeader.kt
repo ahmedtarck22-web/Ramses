@@ -1,9 +1,11 @@
 package com.example.ui.components
 
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -33,9 +35,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
+import com.example.data.model.AppLanguage
 import com.example.ui.theme.AmiriFontFamily
 import com.example.ui.theme.CinzelFontFamily
-import com.example.ui.theme.EgyptianCyan
 import com.example.ui.theme.RoyalGold
 import com.example.ui.theme.RoyalGoldLight
 import com.example.ui.theme.TextPrimary
@@ -44,6 +46,8 @@ import com.example.ui.theme.TextSecondary
 @Composable
 fun RamsesHeader(
     hasPersonalApiKey: Boolean,
+    appLanguage: AppLanguage = AppLanguage.ARABIC,
+    onToggleLanguage: () -> Unit,
     onProfileClick: () -> Unit,
     onApiKeyClick: () -> Unit,
     onMenuClick: () -> Unit,
@@ -52,7 +56,7 @@ fun RamsesHeader(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .padding(horizontal = 14.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -60,18 +64,18 @@ fun RamsesHeader(
         IconButton(
             onClick = onProfileClick,
             modifier = Modifier
-                .size(44.dp)
+                .size(42.dp)
                 .testTag("profile_button")
         ) {
             Icon(
                 imageVector = Icons.Default.Person,
-                contentDescription = "الملف الشخصي والحسابات",
+                contentDescription = if (appLanguage == AppLanguage.ARABIC) "الملف الشخصي والحسابات" else "Profile & Account",
                 tint = TextSecondary,
-                modifier = Modifier.size(26.dp)
+                modifier = Modifier.size(24.dp)
             )
         }
 
-        // Upper Part Center: Ramses App Icon + "ASK RAMSES / اسأل رمسيس" Title
+        // Upper Part Center: Ramses App Icon + "ASK RAMESES / اسأل رمسيس" Title
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
@@ -83,27 +87,27 @@ fun RamsesHeader(
             // Official App Icon of Ramses
             Image(
                 painter = painterResource(id = R.drawable.ask_ramses_app_icon_1791815852062),
-                contentDescription = "أيقونة رمسيس",
+                contentDescription = "Ask Rameses Icon",
                 modifier = Modifier
-                    .size(36.dp)
+                    .size(38.dp)
                     .clip(RoundedCornerShape(10.dp))
-                    .border(1.dp, RoyalGold.copy(alpha = 0.6f), RoundedCornerShape(10.dp)),
+                    .border(1.2.dp, RoyalGold.copy(alpha = 0.7f), RoundedCornerShape(10.dp)),
                 contentScale = ContentScale.Crop
             )
 
-            Spacer(modifier = Modifier.width(10.dp))
+            Spacer(modifier = Modifier.width(8.dp))
 
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
-                    text = "ASK RAMSES",
+                    text = "ASK RAMESES",
                     fontFamily = CinzelFontFamily,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 17.sp,
+                    fontSize = 16.sp,
                     letterSpacing = 0.8.sp,
                     color = TextPrimary
                 )
                 Text(
-                    text = "اسأل رمسيس",
+                    text = if (appLanguage == AppLanguage.ARABIC) "اسأل رمسيس" else "Royal AI Wisdom",
                     fontFamily = AmiriFontFamily,
                     fontSize = 11.sp,
                     color = RoyalGoldLight
@@ -111,13 +115,35 @@ fun RamsesHeader(
             }
         }
 
-        // Right side: API Key shortcut badge + Hamburger Menu
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        // Right side: Language Switcher + API Key shortcut + Hamburger Menu
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            // Language Switcher Badge (AR / EN)
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color(0x22102A43))
+                    .border(1.dp, RoyalGold.copy(alpha = 0.45f), RoundedCornerShape(12.dp))
+                    .clickable { onToggleLanguage() }
+                    .padding(horizontal = 8.dp, vertical = 5.dp)
+                    .testTag("language_switch_button")
+            ) {
+                Text(
+                    text = if (appLanguage == AppLanguage.ARABIC) "EN" else "عربي",
+                    fontFamily = CinzelFontFamily,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 11.sp,
+                    color = RoyalGoldLight
+                )
+            }
+
             // Dedicated API Key icon button with 1.5M token indicator
             IconButton(
                 onClick = onApiKeyClick,
                 modifier = Modifier
-                    .size(44.dp)
+                    .size(40.dp)
                     .testTag("header_api_key_button")
             ) {
                 BadgedBox(
@@ -130,9 +156,9 @@ fun RamsesHeader(
                 ) {
                     Icon(
                         imageVector = Icons.Default.Key,
-                        contentDescription = "مفتاح API الخاص بك (1.5M Token)",
+                        contentDescription = "API Key (1.5M Tokens)",
                         tint = if (hasPersonalApiKey) RoyalGold else TextSecondary,
-                        modifier = Modifier.size(22.dp)
+                        modifier = Modifier.size(20.dp)
                     )
                 }
             }
@@ -141,14 +167,14 @@ fun RamsesHeader(
             IconButton(
                 onClick = onMenuClick,
                 modifier = Modifier
-                    .size(44.dp)
+                    .size(40.dp)
                     .testTag("menu_button")
             ) {
                 Icon(
                     imageVector = Icons.Default.Menu,
-                    contentDescription = "القائمة الملكية",
+                    contentDescription = "Menu",
                     tint = TextSecondary,
-                    modifier = Modifier.size(26.dp)
+                    modifier = Modifier.size(24.dp)
                 )
             }
         }

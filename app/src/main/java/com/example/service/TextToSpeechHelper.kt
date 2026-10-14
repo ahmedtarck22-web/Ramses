@@ -18,18 +18,19 @@ class TextToSpeechHelper(context: Context) {
     private val _isSpeaking = MutableStateFlow(false)
     val isSpeaking: StateFlow<Boolean> = _isSpeaking.asStateFlow()
 
+    private var currentDoneCallback: (() -> Unit)? = null
+
     init {
         tts = TextToSpeech(appContext) { status ->
             if (status == TextToSpeech.SUCCESS) {
                 val arabicLocale = Locale.forLanguageTag("ar-EG")
                 val result = tts?.setLanguage(arabicLocale)
                 if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
-                    // Fallback to generic Arabic or default
-                    tts?.language = Locale.forLanguageTag("ar")
+                    tts?.language = Locale.getDefault()
                 }
-                // Regal Egyptian voice tone: slightly deeper pitch, dignified cadence
-                tts?.setPitch(0.92f)
-                tts?.setSpeechRate(0.96f)
+                // Regal Egyptian/Pharaonic voice tone: dignified cadence
+                tts?.setPitch(0.94f)
+                tts?.setSpeechRate(0.98f)
                 isInitialized = true
 
                 tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
@@ -39,16 +40,22 @@ class TextToSpeechHelper(context: Context) {
 
                     override fun onDone(utteranceId: String?) {
                         _isSpeaking.value = false
+                        currentDoneCallback?.invoke()
+                        currentDoneCallback = null
                     }
 
                     @Deprecated("Deprecated in Java")
                     override fun onError(utteranceId: String?) {
                         _isSpeaking.value = false
+                        currentDoneCallback?.invoke()
+                        currentDoneCallback = null
                     }
 
                     override fun onError(utteranceId: String?, errorCode: Int) {
                         _isSpeaking.value = false
                         Log.w("TTS", "TTS error code: $errorCode")
+                        currentDoneCallback?.invoke()
+                        currentDoneCallback = null
                     }
                 })
             } else {
@@ -57,15 +64,53 @@ class TextToSpeechHelper(context: Context) {
         }
     }
 
-    fun speak(text: String, onDoneCallback: (() -> Unit)? = null) {
-        if (!isInitialized || tts == null) return
+    fun speak(text: String, languageCode: String? = null, onDoneCallback: (() -> Unit)? = null) {
+        if (!isInitialized || tts == null) {
+            onDoneCallback?.invoke()
+            return
+        }
         stop()
+
+        currentDoneCallback = onDoneCallback
 
         // Clean text of markdown symbols like * or # for smooth natural speech
         val cleaned = text
             .replace(Regex("[*#_`~>\\[\\]()]"), " ")
             .replace(Regex("\\s+"), " ")
             .trim()
+
+        if (cleaned.isBlank()) {
+            onDoneCallback?.invoke()
+            return
+        }
+
+        // Detect if text is mostly English or Arabic
+        val isEnglish = when {
+            languageCode?.startsWith("en", ignoreCase = true) == true -> true
+            languageCode?.startsWith("ar", ignoreCase = true) == true -> false
+            else -> {
+                val arabicChars = cleaned.count { it in '\u0600'..'\u06FF' }
+                val latinChars = cleaned.count { it in 'a'..'z' || it in 'A'..'Z' }
+                latinChars > arabicChars
+            }
+        }
+
+        try {
+            if (isEnglish) {
+                tts?.language = Locale.ENGLISH
+                tts?.setPitch(0.92f)
+                tts?.setSpeechRate(1.0f)
+            } else {
+                val arResult = tts?.setLanguage(Locale.forLanguageTag("ar-EG"))
+                if (arResult == TextToSpeech.LANG_MISSING_DATA || arResult == TextToSpeech.LANG_NOT_SUPPORTED) {
+                    tts?.language = Locale.forLanguageTag("ar")
+                }
+                tts?.setPitch(0.94f)
+                tts?.setSpeechRate(0.98f)
+            }
+        } catch (e: Exception) {
+            Log.w("TTS", "Error setting language", e)
+        }
 
         val utteranceId = "ramses_speech_${System.currentTimeMillis()}"
         _isSpeaking.value = true
@@ -75,6 +120,7 @@ class TextToSpeechHelper(context: Context) {
     fun stop() {
         tts?.stop()
         _isSpeaking.value = false
+        currentDoneCallback = null
     }
 
     fun shutdown() {
@@ -82,5 +128,6 @@ class TextToSpeechHelper(context: Context) {
         tts?.shutdown()
         tts = null
         _isSpeaking.value = false
+        currentDoneCallback = null
     }
 }

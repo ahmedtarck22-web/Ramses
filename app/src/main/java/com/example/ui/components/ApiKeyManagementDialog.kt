@@ -65,6 +65,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import com.example.R
+import com.example.data.model.AppLanguage
 import com.example.ui.theme.AmiriFontFamily
 import com.example.ui.theme.CinzelFontFamily
 import com.example.ui.theme.EgyptianCyan
@@ -79,7 +80,8 @@ import com.example.ui.theme.TextSecondary
 fun ApiKeyManagementDialog(
     currentApiKey: String,
     onSaveApiKey: (String) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    appLanguage: AppLanguage = AppLanguage.ARABIC
 ) {
     val context = LocalContext.current
     var keyInput by remember { mutableStateOf(currentApiKey) }
@@ -117,7 +119,7 @@ fun ApiKeyManagementDialog(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "مفتاح API الخاص بك",
+                            text = if (appLanguage == AppLanguage.ARABIC) "مفتاح API الخاص بك" else "Your Personal API Key",
                             fontFamily = CinzelFontFamily,
                             fontWeight = FontWeight.Bold,
                             fontSize = 17.sp,
@@ -131,7 +133,7 @@ fun ApiKeyManagementDialog(
                     ) {
                         Icon(
                             imageVector = Icons.Default.Close,
-                            contentDescription = "إغلاق",
+                            contentDescription = "Close",
                             tint = TextSecondary
                         )
                     }
@@ -153,7 +155,7 @@ fun ApiKeyManagementDialog(
                 Spacer(modifier = Modifier.height(10.dp))
 
                 Text(
-                    text = "حصتك الخاصة: 1.5 مليون توكن مجاناً!",
+                    text = if (appLanguage == AppLanguage.ARABIC) "حصتك الخاصة: 1.5 مليون توكن مجاناً!" else "Your Quota: 1.5 Million Free Tokens!",
                     fontFamily = AmiriFontFamily,
                     fontWeight = FontWeight.Bold,
                     fontSize = 17.sp,
@@ -164,7 +166,10 @@ fun ApiKeyManagementDialog(
                 Spacer(modifier = Modifier.height(4.dp))
 
                 Text(
-                    text = "كل مستخدم يحصل على مفتاح مجاني خاص به من Google AI Studio يمنحه 1,500,000 توكن مجاناً دون استهلاك كوتا مشتركة وبأعلى سرعة معالجة.",
+                    text = if (appLanguage == AppLanguage.ARABIC)
+                        "كل مستخدم يحصل على مفتاح مجاني خاص به من Google AI Studio يمنحه 1,500,000 توكن مجاناً دون استهلاك كوتا مشتركة وبأعلى سرعة معالجة."
+                    else
+                        "Each user receives their own free key from Google AI Studio granting 1,500,000 free tokens without shared rate limits at maximum speed.",
                     fontFamily = AmiriFontFamily,
                     fontSize = 13.sp,
                     color = TextSecondary,

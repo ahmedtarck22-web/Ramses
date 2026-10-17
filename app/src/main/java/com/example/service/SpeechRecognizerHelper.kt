@@ -3,6 +3,8 @@ package com.example.service
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -13,6 +15,7 @@ import kotlinx.coroutines.flow.asStateFlow
 
 class SpeechRecognizerHelper(private val context: Context) {
 
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var speechRecognizer: SpeechRecognizer? = null
 
     private val _isListening = MutableStateFlow(false)
@@ -29,9 +32,14 @@ class SpeechRecognizerHelper(private val context: Context) {
     var onEndOfSpeechDetected: (() -> Unit)? = null
 
     fun startListening(languageCode: String = "ar-EG") {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post { startListening(languageCode) }
+            return
+        }
+
         if (!SpeechRecognizer.isRecognitionAvailable(context)) {
             Log.w("SpeechHelper", "SpeechRecognizer not available on this device")
-            onErrorOccurred?.invoke("التعرف على الصوت غير متاح حالياً / Speech recognition unavailable", -1)
+            onErrorOccurred?.invoke("التعرف على الصوت غير مدعوم على هذا الجهاز / Speech recognition unavailable", -1)
             return
         }
 
@@ -54,7 +62,7 @@ class SpeechRecognizerHelper(private val context: Context) {
 
                     override fun onEndOfSpeech() {
                         _isListening.value = false
-                        onEndOfSpeechDetected?.invoke()
+                        mainHandler.post { onEndOfSpeechDetected?.invoke() }
                     }
 
                     override fun onError(error: Int) {
@@ -67,7 +75,7 @@ class SpeechRecognizerHelper(private val context: Context) {
                             else -> "Speech recognition error code $error"
                         }
                         Log.d("SpeechHelper", "SpeechRecognizer error: $errorMsg ($error)")
-                        onErrorOccurred?.invoke(errorMsg, error)
+                        mainHandler.post { onErrorOccurred?.invoke(errorMsg, error) }
                     }
 
                     override fun onResults(results: Bundle?) {
@@ -76,7 +84,7 @@ class SpeechRecognizerHelper(private val context: Context) {
                         val spokenText = matches?.firstOrNull() ?: ""
                         if (spokenText.isNotBlank()) {
                             _recognizedText.value = spokenText
-                            onSpeechCompleted?.invoke(spokenText)
+                            mainHandler.post { onSpeechCompleted?.invoke(spokenText) }
                         }
                     }
 
@@ -105,11 +113,18 @@ class SpeechRecognizerHelper(private val context: Context) {
         } catch (e: Exception) {
             _isListening.value = false
             Log.e("SpeechHelper", "Failed to start speech recognition", e)
-            onErrorOccurred?.invoke(e.localizedMessage ?: "Failed to start speech recognition", -2)
+            mainHandler.post {
+                onErrorOccurred?.invoke(e.localizedMessage ?: "Failed to start speech recognition", -2)
+            }
         }
     }
 
     fun stopListening() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post { stopListening() }
+            return
+        }
+
         try {
             speechRecognizer?.stopListening()
             speechRecognizer?.destroy()

@@ -78,6 +78,7 @@ fun ChatMessageBubble(
     onOpenApiKeyClick: () -> Unit = {},
     onRetryClick: () -> Unit = {},
     onDismissErrorClick: () -> Unit = {},
+    appLanguage: com.example.data.model.AppLanguage = com.example.data.model.AppLanguage.ARABIC,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -231,7 +232,7 @@ fun ChatMessageBubble(
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "🔑 إدخال / تغيير مفتاحك الخاص (مجاناً)",
+                                text = if (appLanguage == com.example.data.model.AppLanguage.ARABIC) "🔑 إدخال / تغيير مفتاحك الخاص (مجاناً)" else "🔑 Enter / Change Personal Key (Free)",
                                 fontFamily = AmiriFontFamily,
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 14.sp
@@ -258,7 +259,7 @@ fun ChatMessageBubble(
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = "إعادة المحاولة",
+                                    text = if (appLanguage == com.example.data.model.AppLanguage.ARABIC) "إعادة المحاولة" else "Retry",
                                     fontFamily = AmiriFontFamily,
                                     fontSize = 13.sp
                                 )
@@ -287,7 +288,7 @@ fun ChatMessageBubble(
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = "موقع AI Studio",
+                                    text = if (appLanguage == com.example.data.model.AppLanguage.ARABIC) "موقع AI Studio" else "Open AI Studio",
                                     fontFamily = AmiriFontFamily,
                                     fontSize = 13.sp
                                 )
@@ -339,14 +340,18 @@ fun ChatMessageBubble(
                             Spacer(modifier = Modifier.width(10.dp))
                             Column {
                                 Text(
-                                    text = "اسأل رمسيس",
+                                    text = if (appLanguage == com.example.data.model.AppLanguage.ARABIC) "اسأل رمسيس" else "Ask Rameses",
                                     fontFamily = CinzelFontFamily,
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 15.sp,
                                     color = RoyalGoldLight
                                 )
                                 Text(
-                                    text = if (message.isVoiceResponse) "استجابة صوتية ملكية موجزة" else "حكمة فرعونية أصيلة",
+                                    text = if (message.isVoiceResponse) {
+                                        if (appLanguage == com.example.data.model.AppLanguage.ARABIC) "استجابة صوتية ملكية موجزة" else "Royal Spoken Response"
+                                    } else {
+                                        if (appLanguage == com.example.data.model.AppLanguage.ARABIC) "حكمة فرعونية أصيلة" else "Authentic Pharaonic Wisdom"
+                                    },
                                     fontFamily = AmiriFontFamily,
                                     fontSize = 11.sp,
                                     color = EgyptianCyan
@@ -362,7 +367,7 @@ fun ChatMessageBubble(
                             ) {
                                 Icon(
                                     imageVector = Icons.AutoMirrored.Filled.VolumeUp,
-                                    contentDescription = "استماع بصوت رمسيس الثاني",
+                                    contentDescription = if (appLanguage == com.example.data.model.AppLanguage.ARABIC) "استماع بصوت رمسيس الثاني" else "Listen with Rameses's voice",
                                     tint = RoyalGold,
                                     modifier = Modifier.size(20.dp)
                                 )
@@ -373,13 +378,14 @@ fun ChatMessageBubble(
                                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                                     val clip = ClipData.newPlainText("Ramses AI", message.text)
                                     clipboard.setPrimaryClip(clip)
-                                    Toast.makeText(context, "تم نسخ الحكمة الملكية", Toast.LENGTH_SHORT).show()
+                                    val toastMsg = if (appLanguage == com.example.data.model.AppLanguage.ARABIC) "تم نسخ الحكمة الملكية" else "Copied royal message"
+                                    Toast.makeText(context, toastMsg, Toast.LENGTH_SHORT).show()
                                 },
                                 modifier = Modifier.size(36.dp)
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.ContentCopy,
-                                    contentDescription = "نسخ النص",
+                                    contentDescription = if (appLanguage == com.example.data.model.AppLanguage.ARABIC) "نسخ النص" else "Copy text",
                                     tint = TextSecondary,
                                     modifier = Modifier.size(18.dp)
                                 )

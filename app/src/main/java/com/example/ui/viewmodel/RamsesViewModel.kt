@@ -90,6 +90,20 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
     private val _isVoiceTyping = MutableStateFlow(false)
     val isVoiceTyping: StateFlow<Boolean> = _isVoiceTyping.asStateFlow()
 
+    // 3D Avatar Split View mode (Top half 3D avatar, Bottom half text conversation)
+    private val _is3DViewMode = MutableStateFlow(true)
+    val is3DViewMode: StateFlow<Boolean> = _is3DViewMode.asStateFlow()
+
+    // Auto-speak responses in 3D Avatar mode so Ramses speaks with lipsync and body movement
+    private val _isAutoSpeakEnabled = MutableStateFlow(true)
+    val isAutoSpeakEnabled: StateFlow<Boolean> = _isAutoSpeakEnabled.asStateFlow()
+
+    val isSpeaking: StateFlow<Boolean> = ttsHelper.isSpeaking
+
+    // Decoupled in-memory live streaming message for 60/120 FPS buttery smooth rendering
+    private val _streamingMessage = MutableStateFlow<ChatMessage?>(null)
+    val streamingMessage: StateFlow<ChatMessage?> = _streamingMessage.asStateFlow()
+
     // User authentication profile state
     private val _userProfile = MutableStateFlow(
         UserProfile(
@@ -153,10 +167,10 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
                 _isVoiceTyping.value = false
             }
             if (_isGeminiLiveActive.value) {
-                // If the error was just no speech or timeout, stay ready and restart listening
+                // Safely recover and resume listening (recovers from timeout/no-match even if state was THINKING)
                 viewModelScope.launch {
-                    delay(400)
-                    if (_isGeminiLiveActive.value && _voiceCallState.value != VoiceCallState.SPEAKING && _voiceCallState.value != VoiceCallState.THINKING) {
+                    delay(300)
+                    if (_isGeminiLiveActive.value && _voiceCallState.value != VoiceCallState.SPEAKING) {
                         _voiceCallState.value = VoiceCallState.LISTENING
                         val langCode = if (_appLanguage.value == AppLanguage.ENGLISH) "en-US" else "ar-EG"
                         speechHelper.startListening(langCode)
@@ -340,24 +354,21 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
 
         viewModelScope.launch {
             val tempRamsesId = UUID.randomUUID().toString()
-            val placeholderEntity = ChatMessageEntity(
+            _streamingMessage.value = ChatMessage(
                 id = tempRamsesId,
-                sessionId = sessionId,
-                sender = "RAMSES",
+                sender = MessageSender.RAMSES,
                 text = "",
+                timestamp = System.currentTimeMillis(),
                 isVoiceResponse = isVoice,
                 isError = false
             )
-
-            // Insert placeholder so Compose updates immediately
-            chatDao.insertMessage(placeholderEntity)
 
             val activeRagDocs = ragDao.getActiveDocuments()
             var currentLiveChunk = ""
 
             val result = geminiClient.streamRamsesResponse(
                 prompt = userText,
-                history = _messages.value.filter { it.id != tempRamsesId },
+                history = _messages.value,
                 imageBitmap = image,
                 enableSearchGrounding = _isSearchGroundingEnabled.value,
                 isVoiceCall = isVoice,
@@ -366,22 +377,25 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
                 appLanguage = _appLanguage.value,
                 onChunk = { chunk ->
                     currentLiveChunk = chunk
-                    chatDao.updateMessage(
-                        placeholderEntity.copy(
-                            text = chunk,
-                            isError = false
-                        )
-                    )
+                    // Buttery smooth zero-latency in-memory update
+                    _streamingMessage.value = _streamingMessage.value?.copy(text = chunk)
                 }
             )
 
             val finalText = if (result.text.isNotBlank()) result.text else currentLiveChunk
-            val finalEntity = placeholderEntity.copy(
+            val finalEntity = ChatMessageEntity(
+                id = tempRamsesId,
+                sessionId = sessionId,
+                sender = "RAMSES",
                 text = finalText,
+                timestamp = System.currentTimeMillis(),
+                isVoiceResponse = isVoice,
                 isError = result.isError
             )
-            chatDao.updateMessage(finalEntity)
 
+            // Persist the final response exactly ONCE
+            chatDao.insertMessage(finalEntity)
+            _streamingMessage.value = null
             _isLoading.value = false
 
             if (isVoice) {
@@ -394,8 +408,24 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
                         speechHelper.startListening(langTag)
                     }
                 }
+            } else if (_is3DViewMode.value && _isAutoSpeakEnabled.value && !result.isError && finalText.isNotBlank()) {
+                val langTag = if (_appLanguage.value == AppLanguage.ENGLISH) "en-US" else "ar-EG"
+                // Speak response in 3D Avatar mode to drive lipsync and body animation
+                ttsHelper.speak(finalText.take(450), languageCode = langTag)
             }
         }
+    }
+
+    fun toggle3DViewMode() {
+        _is3DViewMode.value = !_is3DViewMode.value
+    }
+
+    fun set3DViewMode(enabled: Boolean) {
+        _is3DViewMode.value = enabled
+    }
+
+    fun toggleAutoSpeak() {
+        _isAutoSpeakEnabled.value = !_isAutoSpeakEnabled.value
     }
 
     // --- Voice Typing (Mic Button in Chat) ---
@@ -418,11 +448,26 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
     // --- Voice Call (Gemini Live) ---
     fun startGeminiLiveCall() {
         _isGeminiLiveActive.value = true
-        _voiceCallState.value = VoiceCallState.LISTENING
+        _voiceCallState.value = VoiceCallState.SPEAKING
         _currentVoiceTranscript.value = ""
         ttsHelper.stop()
-        val langTag = if (_appLanguage.value == AppLanguage.ENGLISH) "en-US" else "ar-EG"
-        speechHelper.startListening(langTag)
+        speechHelper.stopListening()
+
+        val isEnglish = _appLanguage.value == AppLanguage.ENGLISH
+        val greeting = if (isEnglish) {
+            "Greetings, I am listening."
+        } else {
+            "مرحباً بك، أنا أستمع إليك."
+        }
+        val langTag = if (isEnglish) "en-US" else "ar-EG"
+
+        // Speak ultra-short royal greeting then start listening immediately
+        ttsHelper.speak(greeting, languageCode = langTag) {
+            if (_isGeminiLiveActive.value) {
+                _voiceCallState.value = VoiceCallState.LISTENING
+                speechHelper.startListening(langTag)
+            }
+        }
     }
 
     fun endGeminiLiveCall() {
@@ -444,6 +489,11 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
         if (_voiceCallState.value == VoiceCallState.LISTENING) {
             _voiceCallState.value = VoiceCallState.IDLE
         }
+    }
+
+    fun sendLiveVoicePrompt(promptText: String) {
+        _currentVoiceTranscript.value = promptText
+        sendMessage(promptText, isVoice = true)
     }
 
     // --- Helpers ---

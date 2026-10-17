@@ -28,12 +28,14 @@ class GeminiApiClient {
         private const val TAG = "GeminiApiClient"
         private const val BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
-        // Candidate models prioritized for minimum latency (low TTFT) and high reasoning
+        // Candidate models prioritized for minimum latency (ultra-low TTFT) and high reasoning
         val CANDIDATE_MODELS = listOf(
-            "gemini-2.5-flash",
-            "gemini-3.5-flash",
-            "gemini-flash-latest"
+            "gemini-2.0-flash",
+            "gemini-1.5-flash"
         )
+
+        @Volatile
+        var preferredModel: String = "gemini-2.0-flash"
 
         const val RAMSES_SYSTEM_INSTRUCTION_AR = """
 أنت الملك رمسيس الثاني (Ask Rameses / اسأل رمسيس)، الفرعون العظيم، ابن رع، بطل معركة قادش وباني المعابد الخالدة في أبو سمبل وطيبة وعاصمة بر-رعمسيس.
@@ -63,9 +65,9 @@ Persona & Royal Demeanor:
     }
 
     private val okHttpClient = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
-        .writeTimeout(30, TimeUnit.SECONDS)
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(15, TimeUnit.SECONDS)
         .build()
 
     data class GeminiResult(
@@ -150,8 +152,20 @@ Persona & Royal Demeanor:
         val currentParts = JSONArray()
 
         if (imageBitmap != null) {
+            val maxDim = 1024
+            val scaledBitmap = if (imageBitmap.width > maxDim || imageBitmap.height > maxDim) {
+                val ratio = minOf(maxDim.toFloat() / imageBitmap.width, maxDim.toFloat() / imageBitmap.height)
+                Bitmap.createScaledBitmap(
+                    imageBitmap,
+                    (imageBitmap.width * ratio).toInt(),
+                    (imageBitmap.height * ratio).toInt(),
+                    true
+                )
+            } else {
+                imageBitmap
+            }
             val stream = ByteArrayOutputStream()
-            imageBitmap.compress(Bitmap.CompressFormat.JPEG, 80, stream)
+            scaledBitmap.compress(Bitmap.CompressFormat.JPEG, 75, stream)
             val base64Data = Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP)
             val imagePart = JSONObject().apply {
                 val inlineData = JSONObject().apply {
@@ -169,10 +183,10 @@ Persona & Royal Demeanor:
         requestJson.put("contents", contentsArray)
 
         val generationConfig = JSONObject().apply {
-            put("temperature", if (isVoiceCall) 0.6 else 0.7)
+            put("temperature", if (isVoiceCall) 0.5 else 0.7)
             put("topP", 0.95)
             if (isVoiceCall) {
-                put("maxOutputTokens", 120)
+                put("maxOutputTokens", 90)
             }
         }
         requestJson.put("generationConfig", generationConfig)
@@ -212,7 +226,8 @@ Persona & Royal Demeanor:
         var trySearch = enableSearchGrounding && !isVoiceCall
         var lastErrorMessage = ""
 
-        for (modelName in CANDIDATE_MODELS) {
+        val modelsToTry = listOf(preferredModel) + CANDIDATE_MODELS.filter { it != preferredModel }
+        for (modelName in modelsToTry) {
             val requestBodyJson = buildRequestBody(
                 prompt = prompt,
                 history = history,
@@ -223,9 +238,10 @@ Persona & Royal Demeanor:
                 appLanguage = appLanguage
             )
 
-            val endpoint = "$BASE_URL/$modelName:streamGenerateContent?alt=sse&key=$apiKey"
+            val endpoint = "$BASE_URL/$modelName:streamGenerateContent?alt=sse"
             val httpRequest = Request.Builder()
                 .url(endpoint)
+                .addHeader("x-goog-api-key", apiKey)
                 .post(requestBodyJson.toRequestBody(mediaType))
                 .build()
 
@@ -303,6 +319,7 @@ Persona & Royal Demeanor:
                 }
 
                 if (streamSuccess) {
+                    preferredModel = modelName
                     return@withContext GeminiResult(
                         text = accumulatedText.toString().trim(),
                         groundingSources = groundingSources.distinctBy { it.uri },
@@ -377,7 +394,8 @@ Persona & Royal Demeanor:
         val mediaType = "application/json; charset=utf-8".toMediaType()
         var lastErrorMessage = ""
 
-        for (modelName in CANDIDATE_MODELS) {
+        val modelsToTry = listOf(preferredModel) + CANDIDATE_MODELS.filter { it != preferredModel }
+        for (modelName in modelsToTry) {
             try {
                 val requestBodyJson = buildRequestBody(
                     prompt = prompt,
@@ -389,9 +407,10 @@ Persona & Royal Demeanor:
                     appLanguage = appLanguage
                 )
 
-                val endpoint = "$BASE_URL/$modelName:generateContent?key=$apiKey"
+                val endpoint = "$BASE_URL/$modelName:generateContent"
                 val httpRequest = Request.Builder()
                     .url(endpoint)
+                    .addHeader("x-goog-api-key", apiKey)
                     .post(requestBodyJson.toRequestBody(mediaType))
                     .build()
 
@@ -408,6 +427,7 @@ Persona & Royal Demeanor:
                     continue
                 }
 
+                preferredModel = modelName
                 val responseJson = JSONObject(responseBodyString)
                 val candidates = responseJson.optJSONArray("candidates")
                 if (candidates == null || candidates.length() == 0) {

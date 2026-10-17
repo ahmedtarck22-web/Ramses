@@ -1,6 +1,8 @@
 package com.example.service
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
@@ -12,6 +14,7 @@ import java.util.Locale
 class TextToSpeechHelper(context: Context) {
 
     private val appContext = context.applicationContext
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var tts: TextToSpeech? = null
     private var isInitialized = false
 
@@ -40,22 +43,31 @@ class TextToSpeechHelper(context: Context) {
 
                     override fun onDone(utteranceId: String?) {
                         _isSpeaking.value = false
-                        currentDoneCallback?.invoke()
-                        currentDoneCallback = null
+                        mainHandler.post {
+                            val cb = currentDoneCallback
+                            currentDoneCallback = null
+                            cb?.invoke()
+                        }
                     }
 
                     @Deprecated("Deprecated in Java")
                     override fun onError(utteranceId: String?) {
                         _isSpeaking.value = false
-                        currentDoneCallback?.invoke()
-                        currentDoneCallback = null
+                        mainHandler.post {
+                            val cb = currentDoneCallback
+                            currentDoneCallback = null
+                            cb?.invoke()
+                        }
                     }
 
                     override fun onError(utteranceId: String?, errorCode: Int) {
                         _isSpeaking.value = false
                         Log.w("TTS", "TTS error code: $errorCode")
-                        currentDoneCallback?.invoke()
-                        currentDoneCallback = null
+                        mainHandler.post {
+                            val cb = currentDoneCallback
+                            currentDoneCallback = null
+                            cb?.invoke()
+                        }
                     }
                 })
             } else {
@@ -66,7 +78,7 @@ class TextToSpeechHelper(context: Context) {
 
     fun speak(text: String, languageCode: String? = null, onDoneCallback: (() -> Unit)? = null) {
         if (!isInitialized || tts == null) {
-            onDoneCallback?.invoke()
+            mainHandler.post { onDoneCallback?.invoke() }
             return
         }
         stop()
@@ -80,7 +92,7 @@ class TextToSpeechHelper(context: Context) {
             .trim()
 
         if (cleaned.isBlank()) {
-            onDoneCallback?.invoke()
+            mainHandler.post { onDoneCallback?.invoke() }
             return
         }
 
@@ -98,15 +110,15 @@ class TextToSpeechHelper(context: Context) {
         try {
             if (isEnglish) {
                 tts?.language = Locale.ENGLISH
-                tts?.setPitch(0.92f)
-                tts?.setSpeechRate(1.0f)
+                tts?.setPitch(0.96f)
+                tts?.setSpeechRate(1.05f)
             } else {
                 val arResult = tts?.setLanguage(Locale.forLanguageTag("ar-EG"))
                 if (arResult == TextToSpeech.LANG_MISSING_DATA || arResult == TextToSpeech.LANG_NOT_SUPPORTED) {
                     tts?.language = Locale.forLanguageTag("ar")
                 }
-                tts?.setPitch(0.94f)
-                tts?.setSpeechRate(0.98f)
+                tts?.setPitch(0.96f)
+                tts?.setSpeechRate(1.06f)
             }
         } catch (e: Exception) {
             Log.w("TTS", "Error setting language", e)

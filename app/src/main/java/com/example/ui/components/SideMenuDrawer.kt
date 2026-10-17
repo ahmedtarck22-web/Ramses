@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Phone
+import androidx.compose.material.icons.filled.ViewInAr
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -132,6 +133,7 @@ fun SideMenuDrawer(
     onOpenAuthDialog: () -> Unit,
     onOpenApiKeyDialog: () -> Unit,
     onOpenRagDialog: () -> Unit,
+    onOpen3DArtifactsDialog: () -> Unit,
     onNewChatClick: () -> Unit,
     onVoiceCallClick: () -> Unit,
     onCloseDrawer: () -> Unit
@@ -244,6 +246,16 @@ fun SideMenuDrawer(
                 onClick = {
                     onCloseDrawer()
                     onVoiceCallClick()
+                }
+            )
+
+            DrawerMenuItem(
+                icon = Icons.Default.ViewInAr,
+                title = if (appLanguage == AppLanguage.ARABIC) "معرض الآثار 3D (SceneView)" else "3D Relics Gallery (SceneView)",
+                subtitle = if (appLanguage == AppLanguage.ARABIC) "استعراض تماثيل وأهرامات مجسمة بتفاعل لمسي" else "Interactive 3D pharaonic models & relics",
+                onClick = {
+                    onCloseDrawer()
+                    onOpen3DArtifactsDialog()
                 }
             )
 

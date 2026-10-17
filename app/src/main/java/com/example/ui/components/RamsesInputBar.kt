@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -259,19 +260,28 @@ fun RamsesInputBar(
                         )
                     }
 
-                    // Gemini Live Sparkle Button (Voice Call mode like real Gemini Live)
+                    // Gemini Live Voice Call Button
                     IconButton(
                         onClick = onGeminiLiveClick,
                         modifier = Modifier
                             .size(44.dp)
-                            .testTag("sparkle_grounding_button")
+                            .testTag("gemini_live_call_button")
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.AutoAwesome,
-                            contentDescription = "اتصال صوتي مباشر (Gemini Live)",
-                            tint = EgyptianCyan,
-                            modifier = Modifier.size(22.dp)
-                        )
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(CircleShape)
+                                .background(Color(0x2A00E5FF))
+                                .border(1.dp, EgyptianCyan.copy(alpha = 0.6f), CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Phone,
+                                contentDescription = if (appLanguage == com.example.data.model.AppLanguage.ARABIC) "مكالمة رمسيس الصوتية المباشرة" else "Ask Rameses Live Voice Call",
+                                tint = EgyptianCyan,
+                                modifier = Modifier.size(19.dp)
+                            )
+                        }
                     }
                 }
             }

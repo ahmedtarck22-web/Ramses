@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -183,7 +184,7 @@ fun RamsesInputBar(
                             text = if (isListeningVoiceTyping) {
                                 if (appLanguage == com.example.data.model.AppLanguage.ARABIC) "استمع لصوتك الآن..." else "Listening to your voice..."
                             } else {
-                                com.example.data.model.AppStrings.inputPlaceholder(appLanguage)
+                                if (appLanguage == com.example.data.model.AppLanguage.ARABIC) "اسأل رمسيس عن أي شيء..." else "Ask Rameses anything..."
                             },
                             fontFamily = AmiriFontFamily,
                             fontSize = 15.sp,
@@ -218,10 +219,10 @@ fun RamsesInputBar(
                     )
                 }
 
-                // Action cluster: Mic, Gemini Live Sparkle, and Send Button
+                // Action cluster: Mic, Gemini Live Waveform, and Send Button
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                    horizontalArrangement = Arrangement.spacedBy(3.dp)
                 ) {
                     // Send Button when text or image is present
                     if (inputText.isNotBlank() || selectedImageBitmap != null) {
@@ -233,14 +234,14 @@ fun RamsesInputBar(
                             modifier = Modifier
                                 .size(40.dp)
                                 .clip(CircleShape)
-                                .background(RoyalGold)
+                                .background(Color(0xFF1A73E8))
                                 .testTag("send_button")
                         ) {
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.Send,
                                 contentDescription = "إرسال الرسالة",
-                                tint = Color.Black,
-                                modifier = Modifier.size(20.dp)
+                                tint = Color.White,
+                                modifier = Modifier.size(19.dp)
                             )
                         }
                     }
@@ -249,7 +250,7 @@ fun RamsesInputBar(
                     IconButton(
                         onClick = onMicVoiceTypingClick,
                         modifier = Modifier
-                            .size(44.dp)
+                            .size(40.dp)
                             .testTag("mic_button")
                     ) {
                         Icon(
@@ -260,7 +261,7 @@ fun RamsesInputBar(
                         )
                     }
 
-                    // Gemini Live Voice Call Button
+                    // Gemini Live Voice Call Button (Signature Waveform Pill)
                     IconButton(
                         onClick = onGeminiLiveClick,
                         modifier = Modifier
@@ -271,16 +272,52 @@ fun RamsesInputBar(
                             modifier = Modifier
                                 .size(36.dp)
                                 .clip(CircleShape)
-                                .background(Color(0x2A00E5FF))
-                                .border(1.dp, EgyptianCyan.copy(alpha = 0.6f), CircleShape),
+                                .background(
+                                    androidx.compose.ui.graphics.Brush.linearGradient(
+                                        listOf(
+                                            Color(0xFF1A73E8),
+                                            Color(0xFF00E5FF),
+                                            Color(0xFF8E24AA)
+                                        )
+                                    )
+                                )
+                                .border(1.dp, Color(0xFF64B5F6), CircleShape),
                             contentAlignment = Alignment.Center
                         ) {
-                            Icon(
-                                imageVector = Icons.Default.Phone,
-                                contentDescription = if (appLanguage == com.example.data.model.AppLanguage.ARABIC) "مكالمة رمسيس الصوتية المباشرة" else "Ask Rameses Live Voice Call",
-                                tint = EgyptianCyan,
-                                modifier = Modifier.size(19.dp)
-                            )
+                            // 4 Gemini Live Waveform sound bars
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .width(2.5.dp)
+                                        .height(7.dp)
+                                        .clip(RoundedCornerShape(2.dp))
+                                        .background(Color.White)
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .width(2.5.dp)
+                                        .height(13.dp)
+                                        .clip(RoundedCornerShape(2.dp))
+                                        .background(Color.White)
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .width(2.5.dp)
+                                        .height(17.dp)
+                                        .clip(RoundedCornerShape(2.dp))
+                                        .background(Color.White)
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .width(2.5.dp)
+                                        .height(9.dp)
+                                        .clip(RoundedCornerShape(2.dp))
+                                        .background(Color.White)
+                                )
+                            }
                         }
                     }
                 }

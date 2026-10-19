@@ -119,11 +119,24 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
     )
     val userProfile: StateFlow<UserProfile> = _userProfile.asStateFlow()
 
+    // Selected Gemini Model (gemini-2.0-flash / gemini-1.5-pro)
+    private val _selectedModel = MutableStateFlow(
+        prefs.getString("selected_gemini_model", "gemini-2.0-flash") ?: "gemini-2.0-flash"
+    )
+    val selectedModel: StateFlow<String> = _selectedModel.asStateFlow()
+
+    // Selected Gem Persona: "RAMSES", "GEMINI_DEFAULT", "CODE", "WRITER"
+    private val _selectedGem = MutableStateFlow(
+        prefs.getString("selected_gem", "GEMINI_DEFAULT") ?: "GEMINI_DEFAULT"
+    )
+    val selectedGem: StateFlow<String> = _selectedGem.asStateFlow()
+
     private var messageCollectorJob: Job? = null
 
     init {
         _customApiKey.value = prefs.getString("custom_gemini_key", "") ?: ""
         _isSearchGroundingEnabled.value = prefs.getBoolean("search_grounding", false)
+        GeminiApiClient.preferredModel = _selectedModel.value
 
         viewModelScope.launch {
             seedDefaultRagDocuments()
@@ -167,13 +180,11 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
                 _isVoiceTyping.value = false
             }
             if (_isGeminiLiveActive.value) {
-                // Safely recover and resume listening (recovers from timeout/no-match even if state was THINKING)
+                // Safely recover state to LISTENING without hammering recognizer in an infinite error loop
                 viewModelScope.launch {
                     delay(300)
                     if (_isGeminiLiveActive.value && _voiceCallState.value != VoiceCallState.SPEAKING) {
                         _voiceCallState.value = VoiceCallState.LISTENING
-                        val langCode = if (_appLanguage.value == AppLanguage.ENGLISH) "en-US" else "ar-EG"
-                        speechHelper.startListening(langCode)
                     }
                 }
             }
@@ -316,6 +327,23 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun selectModel(modelName: String) {
+        _selectedModel.value = modelName
+        GeminiApiClient.preferredModel = modelName
+        prefs.edit().putString("selected_gemini_model", modelName).apply()
+    }
+
+    fun selectGem(gemId: String) {
+        _selectedGem.value = gemId
+        prefs.edit().putString("selected_gem", gemId).apply()
+        if (gemId == "RAMSES") {
+            _is3DViewMode.value = true
+        } else {
+            _is3DViewMode.value = false
+        }
+        startNewSession()
+    }
+
     // --- High-Speed Message Sending (with Real-Time Streaming) ---
     fun sendMessage(promptText: String, isVoice: Boolean = false) {
         val trimmed = promptText.trim()
@@ -375,6 +403,7 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
                 customApiKey = _customApiKey.value,
                 ragContext = activeRagDocs,
                 appLanguage = _appLanguage.value,
+                gemPersona = _selectedGem.value,
                 onChunk = { chunk ->
                     currentLiveChunk = chunk
                     // Buttery smooth zero-latency in-memory update
@@ -408,10 +437,10 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
                         speechHelper.startListening(langTag)
                     }
                 }
-            } else if (_is3DViewMode.value && _isAutoSpeakEnabled.value && !result.isError && finalText.isNotBlank()) {
+            } else if (_is3DViewMode.value && _isAutoSpeakEnabled.value && finalText.isNotBlank()) {
                 val langTag = if (_appLanguage.value == AppLanguage.ENGLISH) "en-US" else "ar-EG"
                 // Speak response in 3D Avatar mode to drive lipsync and body animation
-                ttsHelper.speak(finalText.take(450), languageCode = langTag)
+                ttsHelper.speak(finalText.take(600), languageCode = langTag)
             }
         }
     }

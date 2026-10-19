@@ -85,7 +85,7 @@ fun RoyalHeroSection(
                 .padding(4.dp)
         ) {
             Image(
-                painter = painterResource(id = R.drawable.ask_ramses_app_icon_1791815852062),
+                painter = painterResource(id = R.drawable.ramses_user_photo),
                 contentDescription = "أيقونة اسأل رمسيس",
                 modifier = Modifier
                     .fillMaxSize()

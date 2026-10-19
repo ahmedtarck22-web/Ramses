@@ -95,222 +95,6 @@ import kotlin.math.cos
 import kotlin.math.sin
 
 /**
- * Authentic Gemini Live Radiant Plasma Orb
- * Fluid reactive sound sphere that ripples dynamically to voice amplitude and state transitions.
- */
-@Composable
-fun GeminiLiveRadiantOrb(
-    state: VoiceCallState,
-    rmsDb: Float,
-    modifier: Modifier = Modifier
-) {
-    val infiniteTransition = rememberInfiniteTransition(label = "gemini_live_orb")
-
-    // Continuous rotation for plasma vortex
-    val swirlAngle by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 12000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "swirl_angle"
-    )
-
-    // Breathing pulse
-    val breathing by infiniteTransition.animateFloat(
-        initialValue = 0.94f,
-        targetValue = 1.08f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1800, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "breathing"
-    )
-
-    // Acoustic wave oscillation
-    val acousticPhase by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = (2 * Math.PI).toFloat(),
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 2400, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "acoustic_wave"
-    )
-
-    Box(
-        contentAlignment = Alignment.Center,
-        modifier = modifier.size(260.dp)
-    ) {
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val center = Offset(size.width / 2f, size.height / 2f)
-            val audioVolumeBoost = if (state == VoiceCallState.LISTENING) {
-                (rmsDb.coerceIn(0f, 16f) / 16f) * 45f
-            } else if (state == VoiceCallState.SPEAKING) {
-                28f
-            } else {
-                8f
-            }
-
-            val baseRadius = size.width * 0.30f * (if (state == VoiceCallState.SPEAKING) breathing * 1.08f else breathing)
-
-            // 1. Outer Cosmic Nebula Glow
-            val nebulaColors = when (state) {
-                VoiceCallState.LISTENING -> listOf(
-                    Color(0xFF00E5FF).copy(alpha = 0.40f),
-                    Color(0xFF0284C7).copy(alpha = 0.20f),
-                    Color.Transparent
-                )
-                VoiceCallState.SPEAKING -> listOf(
-                    Color(0xFFFFDF73).copy(alpha = 0.45f),
-                    Color(0xFFD4AF37).copy(alpha = 0.25f),
-                    Color.Transparent
-                )
-                VoiceCallState.THINKING -> listOf(
-                    Color(0xFF818CF8).copy(alpha = 0.40f),
-                    Color(0xFF6366F1).copy(alpha = 0.20f),
-                    Color.Transparent
-                )
-                VoiceCallState.IDLE -> listOf(
-                    Color(0xFF38BDF8).copy(alpha = 0.20f),
-                    Color.Transparent
-                )
-            }
-
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = nebulaColors,
-                    center = center,
-                    radius = baseRadius * 1.8f + audioVolumeBoost
-                ),
-                radius = baseRadius * 1.8f + audioVolumeBoost,
-                center = center
-            )
-
-            // 2. Dynamic Expanding Soundwave Rings (when speaking or listening)
-            if (state == VoiceCallState.LISTENING || state == VoiceCallState.SPEAKING) {
-                val ringColor = if (state == VoiceCallState.LISTENING) {
-                    Color(0xFF00E5FF).copy(alpha = 0.45f)
-                } else {
-                    Color(0xFFFFDF73).copy(alpha = 0.50f)
-                }
-
-                drawCircle(
-                    color = ringColor,
-                    radius = baseRadius * 1.40f + audioVolumeBoost * 0.6f,
-                    center = center,
-                    style = Stroke(width = 2.5f)
-                )
-
-                drawCircle(
-                    color = ringColor.copy(alpha = 0.25f),
-                    radius = baseRadius * 1.62f + audioVolumeBoost * 0.8f,
-                    center = center,
-                    style = Stroke(width = 1.5f)
-                )
-            }
-
-            // 3. Fluid Living Gemini Plasma Orb (Multi-node Bézier mesh)
-            val points = 16
-            val path = Path()
-            val angleStep = (2f * Math.PI.toFloat()) / points
-
-            for (i in 0 until points) {
-                val currentAngle = i * angleStep + Math.toRadians(swirlAngle.toDouble()).toFloat()
-                val waveOffset = sin(currentAngle * 3f + acousticPhase) * (12f + audioVolumeBoost)
-                val r = baseRadius + waveOffset
-
-                val x = center.x + r * cos(currentAngle)
-                val y = center.y + r * sin(currentAngle)
-
-                if (i == 0) {
-                    path.moveTo(x, y)
-                } else {
-                    val prevAngle = (i - 1) * angleStep + Math.toRadians(swirlAngle.toDouble()).toFloat()
-                    val prevR = baseRadius + sin(prevAngle * 3f + acousticPhase) * (12f + audioVolumeBoost)
-                    val prevX = center.x + prevR * cos(prevAngle)
-                    val prevY = center.y + prevR * sin(prevAngle)
-
-                    val cx = (prevX + x) / 2f
-                    val cy = (prevY + y) / 2f
-                    path.quadraticTo(prevX, prevY, cx, cy)
-                }
-            }
-            path.close()
-
-            val plasmaColors = when (state) {
-                VoiceCallState.LISTENING -> listOf(
-                    Color(0xFF00E5FF),
-                    Color(0xFF38BDF8),
-                    Color(0xFF1D4ED8),
-                    Color(0xFF00F0FF)
-                )
-                VoiceCallState.SPEAKING -> listOf(
-                    Color(0xFFFFDF73),
-                    Color(0xFFD4AF37),
-                    Color(0xFFF59E0B),
-                    Color(0xFFFFED8A)
-                )
-                VoiceCallState.THINKING -> listOf(
-                    Color(0xFF818CF8),
-                    Color(0xFFC084FC),
-                    Color(0xFF6366F1),
-                    Color(0xFFE5B842)
-                )
-                VoiceCallState.IDLE -> listOf(
-                    Color(0xFF1E293B),
-                    Color(0xFF334155),
-                    Color(0xFF475569)
-                )
-            }
-
-            val plasmaBrush = Brush.sweepGradient(
-                colors = plasmaColors,
-                center = center
-            )
-
-            drawPath(path = path, brush = plasmaBrush)
-
-            // 4. Radiant Center Core
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(
-                        Color.White.copy(alpha = 0.95f),
-                        when (state) {
-                            VoiceCallState.SPEAKING -> RoyalGoldLight.copy(alpha = 0.6f)
-                            VoiceCallState.LISTENING -> Color(0xFF00E5FF).copy(alpha = 0.6f)
-                            else -> Color(0xFF818CF8).copy(alpha = 0.5f)
-                        },
-                        Color.Transparent
-                    ),
-                    center = center,
-                    radius = baseRadius * 0.50f
-                ),
-                radius = baseRadius * 0.50f,
-                center = center
-            )
-        }
-
-        // Center Royal Emblem
-        Box(
-            contentAlignment = Alignment.Center,
-            modifier = Modifier
-                .size(62.dp)
-                .clip(CircleShape)
-                .background(Color(0xD9070A13))
-                .border(2.dp, if (state == VoiceCallState.SPEAKING) RoyalGold else EgyptianCyan, CircleShape)
-        ) {
-            Text(
-                text = "𓇳", // Ra Sun Disc Hieroglyph
-                fontSize = 28.sp,
-                color = if (state == VoiceCallState.SPEAKING) RoyalGoldLight else Color(0xFFE0F7FA)
-            )
-        }
-    }
-}
-
-/**
  * Animated Gemini Audio Frequency Equalizer Bar
  */
 @Composable
@@ -385,7 +169,6 @@ fun GeminiLiveVoiceScreen(
     var inCallTextInput by remember { mutableStateOf("") }
     var showKeyboardInput by remember { mutableStateOf(false) }
     var callSeconds by remember { mutableStateOf(0) }
-    var is3DSceneViewMode by remember { mutableStateOf(false) }
 
     // Live call duration timer
     LaunchedEffect(Unit) {
@@ -501,78 +284,50 @@ fun GeminiLiveVoiceScreen(
                     }
                 }
 
-                // 2. Centerpiece: Gemini Live Radiant Orb (or 3D SceneView Statue Toggle)
+                // 2. Centerpiece: King Ramses 3D Model with real-time lip-sync and hand-to-chin gestures (Replaces Orb)
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center
+                    verticalArrangement = Arrangement.Center,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f, fill = false)
                 ) {
-                    if (is3DSceneViewMode) {
-                        Box(
-                            modifier = Modifier
-                                .size(240.dp)
-                                .clip(CircleShape)
-                                .background(Color(0xD9060B14))
-                                .border(2.dp, RoyalGold, CircleShape),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            RamsesSceneView(
-                                modifier = Modifier.fillMaxSize(),
-                                modelAssetPath = "models/ramses_glb.glb",
-                                showControls = false,
-                                initialAutoRotate = false,
-                                isResponding = voiceCallState == VoiceCallState.SPEAKING,
-                                idleAnimationEnabled = true,
-                                rmsDb = rmsDb
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(320.dp)
+                            .clip(RoundedCornerShape(24.dp))
+                            .background(
+                                Brush.verticalGradient(
+                                    colors = listOf(
+                                        Color(0xFF040816),
+                                        Color(0xFF08122A),
+                                        Color(0xFF050B18)
+                                    )
+                                )
                             )
-                        }
-                    } else {
-                        GeminiLiveRadiantOrb(
-                            state = voiceCallState,
-                            rmsDb = rmsDb
+                            .border(1.5.dp, RoyalGold.copy(alpha = 0.5f), RoundedCornerShape(24.dp)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        RamsesAvatar3DView(
+                            modifier = Modifier.fillMaxSize(),
+                            isSpeaking = voiceCallState == VoiceCallState.SPEAKING,
+                            isListening = voiceCallState == VoiceCallState.LISTENING,
+                            isThinking = voiceCallState == VoiceCallState.THINKING,
+                            rmsDb = rmsDb,
+                            appLanguage = appLanguage,
+                            onStopSpeaking = onStopSpeaking,
+                            isAutoSpeakEnabled = true
                         )
                     }
 
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(10.dp))
 
                     // Audio Frequency Bars
                     GeminiLiveEqualizerBars(
                         state = voiceCallState,
                         rmsDb = rmsDb
                     )
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    // Mode Switcher: 3D SceneView <-> Radiant Orb
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(Color(0x24102A43))
-                            .border(0.8.dp, RoyalGold.copy(alpha = 0.4f), RoundedCornerShape(14.dp))
-                            .clickable { is3DSceneViewMode = !is3DSceneViewMode }
-                            .padding(horizontal = 12.dp, vertical = 5.dp)
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Icon(
-                                imageVector = if (is3DSceneViewMode) Icons.Default.AutoAwesome else Icons.Default.ViewInAr,
-                                contentDescription = null,
-                                tint = RoyalGoldLight,
-                                modifier = Modifier.size(14.dp)
-                            )
-                            Text(
-                                text = if (is3DSceneViewMode) {
-                                    if (isArabic) "العودة للكرة الضوئية" else "Switch to Radiant Orb"
-                                } else {
-                                    if (isArabic) "عرض مجسم رمسيس 3D (SceneView)" else "3D Ramses Model (SceneView)"
-                                },
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = RoyalGoldLight
-                            )
-                        }
-                    }
                 }
 
                 // 3. Live Subtitle & Transcript Card (Seamless Speech Flow)

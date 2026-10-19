@@ -55,7 +55,8 @@ data class PromptHistoryItem(
  * ensuring the API key is retrieved from BuildConfig.
  */
 open class GeminiPromptViewModel(
-    private val okHttpClient: OkHttpClient = defaultOkHttpClient()
+    private val okHttpClient: OkHttpClient = defaultOkHttpClient(),
+    private val ioDispatcher: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.IO
 ) : ViewModel() {
 
     companion object {
@@ -65,9 +66,9 @@ open class GeminiPromptViewModel(
 
         private fun defaultOkHttpClient(): OkHttpClient {
             return OkHttpClient.Builder()
-                .connectTimeout(15, TimeUnit.SECONDS)
-                .readTimeout(30, TimeUnit.SECONDS)
-                .writeTimeout(15, TimeUnit.SECONDS)
+                .connectTimeout(10, TimeUnit.SECONDS)
+                .readTimeout(20, TimeUnit.SECONDS)
+                .writeTimeout(10, TimeUnit.SECONDS)
                 .build()
         }
     }
@@ -228,7 +229,7 @@ open class GeminiPromptViewModel(
         prompt: String,
         apiKey: String,
         model: String
-    ): String = withContext(Dispatchers.IO) {
+    ): String = withContext(ioDispatcher) {
         val endpointUrl = "$BASE_URL/$model:generateContent?key=$apiKey"
 
         // Construct Gemini JSON payload:

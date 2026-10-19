@@ -121,7 +121,7 @@ fun ProfileDossierDialog(
 
                 // Avatar and Persona title
                 Image(
-                    painter = painterResource(id = R.drawable.ask_ramses_app_icon_1791815852062),
+                    painter = painterResource(id = R.drawable.ramses_user_photo),
                     contentDescription = "اسأل رمسيس",
                     modifier = Modifier
                         .size(80.dp)

@@ -143,7 +143,7 @@ fun ApiKeyManagementDialog(
 
                 // App icon badge
                 Image(
-                    painter = painterResource(id = R.drawable.ask_ramses_app_icon_1791815852062),
+                    painter = painterResource(id = R.drawable.ramses_user_photo),
                     contentDescription = "Ask Ramses",
                     modifier = Modifier
                         .size(64.dp)

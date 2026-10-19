@@ -72,9 +72,9 @@ fun RamsesSceneView(
     var currentModelNode by remember { mutableStateOf<ModelNode?>(null) }
     var isLoading by remember { mutableStateOf(true) }
     var autoRotate by remember { mutableStateOf(initialAutoRotate) }
-    var manualRotationY by remember { mutableFloatStateOf(0f) }
-    var manualRotationX by remember { mutableFloatStateOf(2f) }
-    var currentScale by remember { mutableFloatStateOf(1.0f) }
+    var manualRotationY by remember { mutableFloatStateOf(270f) }
+    var manualRotationX by remember { mutableFloatStateOf(0f) }
+    var currentScale by remember { mutableFloatStateOf(0.55f) }
 
     // Multi-track continuous animations for lifelike presence
     val infiniteTransition = rememberInfiniteTransition(label = "sceneview_ramses_dynamics")
@@ -99,12 +99,12 @@ fun RamsesSceneView(
         label = "sceneview_head_tilt"
     )
 
-    // 3. Active speech cadence nod when responding (1.4s)
+    // 3. Active speech cadence nod when responding (1.3s)
     val speechCycle by infiniteTransition.animateFloat(
         initialValue = 0f,
         targetValue = (2 * Math.PI).toFloat(),
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1400, easing = LinearEasing)
+            animation = tween(durationMillis = 1300, easing = LinearEasing)
         ),
         label = "sceneview_speech_nod"
     )
@@ -128,9 +128,7 @@ fun RamsesSceneView(
         if (!modelAssetPath.isNullOrBlank()) {
             candidatePaths.add(modelAssetPath)
         }
-        candidatePaths.add("models/ramses_glb.glb")
-        candidatePaths.add("models/Ramses GLB.glb")
-        candidatePaths.add("models/ramses_statue.glb")
+        candidatePaths.add("models/Ramses.final.glb")
 
         for (path in candidatePaths.distinct()) {
             try {
@@ -140,6 +138,7 @@ fun RamsesSceneView(
                         modelInstance = instance,
                         scaleToUnits = currentScale
                     )
+                    node.centerOrigin(Position(0f, 0f, 0f))
                     // If model contains embedded animations, trigger playback
                     if (node.animationCount > 0) {
                         try {
@@ -173,43 +172,36 @@ fun RamsesSceneView(
         currentModelNode?.let { node ->
             if (idleAnimationEnabled) {
                 if (isResponding) {
-                    // Actively responding: expressive royal head nods, forward lean, speaking chest modulation
-                    val speechNod = (sin(speechCycle) * 3.8f) + 2.5f
-                    val speechSway = sin(speechCycle * 0.5f) * 2.2f
-                    val speechLeanZ = -0.04f + (sin(speechCycle) * 0.02f)
-                    val dynamicScale = currentScale * (1.02f + (sin(speechCycle) * 0.015f))
+                    // Real 3D mouth lip sync and hand to chin gesture
+                    val mouthAperture = ((sin(speechCycle * 4f) + 1f) * 0.5f).coerceIn(0.12f, 1f)
+                    val handToChin = (0.88f + (sin(speechCycle) * 0.12f)).coerceIn(0.70f, 1.0f)
+                    try {
+                        node.setMorphWeights(floatArrayOf(mouthAperture, handToChin), 0)
+                        node.renderableNodes.forEach {
+                            it.setMorphWeights(floatArrayOf(mouthAperture, handToChin), 0)
+                        }
+                    } catch (_: Exception) {}
 
-                    val totalY = if (autoRotate) {
-                        (animatedRotation + manualRotationY + speechSway) % 360f
-                    } else {
-                        (manualRotationY + speechSway) % 360f
-                    }
-                    val totalX = (manualRotationX + speechNod).coerceIn(-45f, 45f)
-                    val totalZ = sin(speechCycle * 0.7f) * 1.0f
+                    val idleElevationY = (sin(breathingPhase) * 0.004f)
+                    val totalY = (manualRotationY + (if (autoRotate) animatedRotation else 0f)) % 360f
 
-                    node.rotation = Rotation(x = totalX, y = totalY, z = totalZ)
-                    node.position = Position(x = 0f, y = (sin(breathingPhase) * 0.012f), z = speechLeanZ)
-                    node.scale = Scale(dynamicScale, dynamicScale, dynamicScale)
-                } else {
-                    // Constant, subtle idle animation: lifelike breathing, gentle head tilt & subtle sway
-                    val idleElevationY = (sin(breathingPhase) * 0.014f)
-                    val idleScale = currentScale * (1.0f + (sin(breathingPhase) * 0.009f))
-
-                    // Natural head tilting: forward/backward nodding + sideways ear-tilt + gentle yaw sway
-                    val idleTiltX = (sin(headTiltPhase) * 1.8f) + (cos(breathingPhase) * 0.6f)
-                    val idleTiltZ = sin(headTiltPhase) * 1.5f
-                    val idleSwayY = cos(headTiltPhase * 0.5f) * 2.2f
-
-                    val totalY = if (autoRotate) {
-                        (animatedRotation + manualRotationY + idleSwayY) % 360f
-                    } else {
-                        (manualRotationY + idleSwayY) % 360f
-                    }
-                    val totalX = (manualRotationX + idleTiltX).coerceIn(-45f, 45f)
-
-                    node.rotation = Rotation(x = totalX, y = totalY, z = idleTiltZ)
+                    node.rotation = Rotation(x = 0.8f, y = totalY, z = 0f)
                     node.position = Position(x = 0f, y = idleElevationY, z = 0f)
-                    node.scale = Scale(idleScale, idleScale, idleScale)
+                    node.scale = Scale(currentScale, currentScale, currentScale)
+                } else {
+                    try {
+                        node.setMorphWeights(floatArrayOf(0f, 0f), 0)
+                        node.renderableNodes.forEach {
+                            it.setMorphWeights(floatArrayOf(0f, 0f), 0)
+                        }
+                    } catch (_: Exception) {}
+
+                    val idleElevationY = (sin(breathingPhase) * 0.004f)
+                    val totalY = (manualRotationY + (if (autoRotate) animatedRotation else 0f)) % 360f
+
+                    node.rotation = Rotation(x = 0f, y = totalY, z = 0f)
+                    node.position = Position(x = 0f, y = idleElevationY, z = 0f)
+                    node.scale = Scale(currentScale, currentScale, currentScale)
                 }
             } else {
                 // Static turntable mode

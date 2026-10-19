@@ -78,7 +78,13 @@ class TextToSpeechHelper(context: Context) {
 
     fun speak(text: String, languageCode: String? = null, onDoneCallback: (() -> Unit)? = null) {
         if (!isInitialized || tts == null) {
-            mainHandler.post { onDoneCallback?.invoke() }
+            mainHandler.postDelayed({
+                if (isInitialized && tts != null) {
+                    speak(text, languageCode, onDoneCallback)
+                } else {
+                    onDoneCallback?.invoke()
+                }
+            }, 600)
             return
         }
         stop()
@@ -127,6 +133,17 @@ class TextToSpeechHelper(context: Context) {
         val utteranceId = "ramses_speech_${System.currentTimeMillis()}"
         _isSpeaking.value = true
         tts?.speak(cleaned, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
+
+        // Safety fallback watchdog in case UtteranceProgressListener does not fire on this device
+        val fallbackDurationMs = (cleaned.split(" ").size * 320L + 1500L).coerceIn(2500L, 16000L)
+        mainHandler.postDelayed({
+            if (_isSpeaking.value) {
+                _isSpeaking.value = false
+                val cb = currentDoneCallback
+                currentDoneCallback = null
+                cb?.invoke()
+            }
+        }, fallbackDurationMs)
     }
 
     fun stop() {

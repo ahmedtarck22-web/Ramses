@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Person
@@ -51,6 +52,8 @@ import com.example.ui.theme.TextSecondary
 fun RamsesHeader(
     hasPersonalApiKey: Boolean,
     appLanguage: AppLanguage = AppLanguage.ARABIC,
+    selectedModelName: String = "gemini-2.0-flash",
+    onModelClick: () -> Unit = {},
     onToggleLanguage: () -> Unit,
     onProfileClick: () -> Unit,
     onVoiceCallClick: () -> Unit = {},
@@ -68,142 +71,70 @@ fun RamsesHeader(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        // Profile / User Button (Left)
+        // 1. Navigation Menu Button (Start / Left in LTR) - Opens Chat History Drawer
         IconButton(
-            onClick = onProfileClick,
+            onClick = onMenuClick,
             modifier = Modifier
-                .size(40.dp)
-                .testTag("profile_button")
+                .size(42.dp)
+                .clip(CircleShape)
+                .background(Color(0x1AFFFFFF))
+                .testTag("menu_button")
         ) {
             Icon(
-                imageVector = Icons.Default.Person,
-                contentDescription = if (appLanguage == AppLanguage.ARABIC) "الملف الشخصي والحسابات" else "Profile & Account",
-                tint = TextSecondary,
-                modifier = Modifier.size(24.dp)
+                imageVector = Icons.Default.Menu,
+                contentDescription = if (appLanguage == AppLanguage.ARABIC) "القائمة وسجل المحادثات" else "Menu & History",
+                tint = TextPrimary,
+                modifier = Modifier.size(22.dp)
             )
         }
 
-        // Upper Part Center: Ramses App Icon + "ASK RAMESES / اسأل رمسيس" Title
+        // 2. Center: Royal App Title "اسأل رمسيس" / "Ask Rameses"
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
-                .clip(RoundedCornerShape(14.dp))
-                .clickable { onApiKeyClick() }
-                .padding(horizontal = 8.dp, vertical = 4.dp),
+                .clip(RoundedCornerShape(20.dp))
+                .background(Color(0xFF10192A))
+                .border(1.dp, RoyalGold.copy(alpha = 0.45f), RoundedCornerShape(20.dp))
+                .padding(horizontal = 14.dp, vertical = 6.dp),
             horizontalArrangement = Arrangement.Center
         ) {
-            // Official App Icon of Ramses
             Image(
-                painter = painterResource(id = R.drawable.ask_ramses_app_icon_1791815852062),
-                contentDescription = "Ask Rameses Icon",
+                painter = painterResource(id = R.drawable.ramses_user_photo),
+                contentDescription = null,
                 modifier = Modifier
-                    .size(38.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .border(1.2.dp, RoyalGold.copy(alpha = 0.7f), RoundedCornerShape(10.dp)),
+                    .size(22.dp)
+                    .clip(CircleShape)
+                    .border(1.dp, RoyalGold, CircleShape),
                 contentScale = ContentScale.Crop
             )
 
             Spacer(modifier = Modifier.width(8.dp))
 
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(
-                    text = "ASK RAMESES",
-                    fontFamily = CinzelFontFamily,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 15.sp,
-                    letterSpacing = 0.8.sp,
-                    color = TextPrimary
-                )
-                Text(
-                    text = if (appLanguage == AppLanguage.ARABIC) "اسأل رمسيس" else "Royal AI Wisdom",
-                    fontFamily = AmiriFontFamily,
-                    fontSize = 11.sp,
-                    color = RoyalGoldLight
-                )
-            }
+            Text(
+                text = if (appLanguage == AppLanguage.ARABIC) "اسأل رمسيس" else "Ask Rameses",
+                fontFamily = if (appLanguage == AppLanguage.ARABIC) AmiriFontFamily else CinzelFontFamily,
+                fontWeight = FontWeight.Bold,
+                fontSize = 16.sp,
+                color = RoyalGoldLight
+            )
         }
 
-        // Right side: Voice Call + Language Switcher + API Key shortcut + Hamburger Menu
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        // 3. End Action: Profile Avatar (Language & 3D toggles moved inside drawer settings per user request)
+        IconButton(
+            onClick = onProfileClick,
+            modifier = Modifier
+                .size(40.dp)
+                .clip(CircleShape)
+                .background(Color(0x2A1A73E8))
+                .border(1.dp, Color(0xFF4285F4).copy(alpha = 0.6f), CircleShape)
+                .testTag("profile_button")
         ) {
-
-            // 3D Avatar Viewport Toggle Button (King Ramses 3D)
-            IconButton(
-                onClick = onToggle3DAvatarMode,
-                modifier = Modifier
-                    .size(38.dp)
-                    .clip(CircleShape)
-                    .background(if (is3DAvatarMode) Color(0x33D4AF37) else Color(0x18FFFFFF))
-                    .border(1.dp, if (is3DAvatarMode) RoyalGold else Color.White.copy(alpha = 0.2f), CircleShape)
-                    .testTag("header_3d_avatar_toggle")
-            ) {
-                Icon(
-                    imageVector = Icons.Default.ViewInAr,
-                    contentDescription = if (appLanguage == AppLanguage.ARABIC) "تبديل عرض رمسيس 3D" else "Toggle 3D Ramses",
-                    tint = if (is3DAvatarMode) RoyalGoldLight else Color.White.copy(alpha = 0.7f),
-                    modifier = Modifier.size(20.dp)
-                )
-            }
-
-            // Language Switcher Badge (AR / EN)
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(Color(0x22102A43))
-                    .border(1.dp, RoyalGold.copy(alpha = 0.45f), RoundedCornerShape(12.dp))
-                    .clickable { onToggleLanguage() }
-                    .padding(horizontal = 8.dp, vertical = 5.dp)
-                    .testTag("language_switch_button")
-            ) {
-                Text(
-                    text = if (appLanguage == AppLanguage.ARABIC) "EN" else "عربي",
-                    fontFamily = CinzelFontFamily,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 11.sp,
-                    color = RoyalGoldLight
-                )
-            }
-
-            // Dedicated API Key icon button with 1.5M token indicator
-            IconButton(
-                onClick = onApiKeyClick,
-                modifier = Modifier
-                    .size(38.dp)
-                    .testTag("header_api_key_button")
-            ) {
-                BadgedBox(
-                    badge = {
-                        Badge(
-                            containerColor = if (hasPersonalApiKey) Color(0xFF10B981) else Color(0xFFF59E0B),
-                            modifier = Modifier.size(7.dp)
-                        )
-                    }
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Key,
-                        contentDescription = "API Key (1.5M Tokens)",
-                        tint = if (hasPersonalApiKey) RoyalGold else TextSecondary,
-                        modifier = Modifier.size(19.dp)
-                    )
-                }
-            }
-
-            // Three Horizontal Lines / Hamburger Menu
-            IconButton(
-                onClick = onMenuClick,
-                modifier = Modifier
-                    .size(38.dp)
-                    .testTag("menu_button")
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Menu,
-                    contentDescription = "Menu",
-                    tint = TextSecondary,
-                    modifier = Modifier.size(22.dp)
-                )
-            }
+            Icon(
+                imageVector = Icons.Default.Person,
+                contentDescription = if (appLanguage == AppLanguage.ARABIC) "الملف الشخصي والحسابات" else "Profile & Account",
+                tint = Color(0xFF8AB4F8),
+                modifier = Modifier.size(20.dp)
+            )
         }
     }
 }

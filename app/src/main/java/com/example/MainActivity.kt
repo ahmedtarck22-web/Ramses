@@ -39,15 +39,18 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
-import androidx.compose.material.icons.filled.Chat
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.ViewInAr
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -143,12 +146,15 @@ fun RamsesApp(viewModel: RamsesViewModel) {
     val is3DViewMode by viewModel.is3DViewMode.collectAsStateWithLifecycle()
     val isSpeaking by viewModel.isSpeaking.collectAsStateWithLifecycle()
     val isAutoSpeakEnabled by viewModel.isAutoSpeakEnabled.collectAsStateWithLifecycle()
+    val selectedModel by viewModel.selectedModel.collectAsStateWithLifecycle()
+    val selectedGem by viewModel.selectedGem.collectAsStateWithLifecycle()
 
     var inputText by remember { mutableStateOf("") }
     var showAuthDialog by remember { mutableStateOf(false) }
     var showApiKeyDialog by remember { mutableStateOf(false) }
     var showRagDialog by remember { mutableStateOf(false) }
     var show3DArtifactsDialog by remember { mutableStateOf(false) }
+    var showModelSelectorDialog by remember { mutableStateOf(false) }
 
     val listState = rememberLazyListState()
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
@@ -216,6 +222,8 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                     userProfile = userProfile,
                     sessions = sessions,
                     currentSessionId = currentSessionId,
+                    selectedGem = selectedGem,
+                    onSelectGem = { gemId -> viewModel.selectGem(gemId) },
                     appLanguage = appLanguage,
                     onToggleLanguage = { viewModel.toggleLanguage() },
                     onSelectSession = { sid -> viewModel.switchSession(sid) },
@@ -254,6 +262,8 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                         RamsesHeader(
                             hasPersonalApiKey = customApiKey.isNotBlank(),
                             appLanguage = appLanguage,
+                            selectedModelName = selectedModel,
+                            onModelClick = { showModelSelectorDialog = true },
                             onToggleLanguage = { viewModel.toggleLanguage() },
                             onProfileClick = { showAuthDialog = true },
                             onOpen3DArtifactsClick = { show3DArtifactsDialog = true },
@@ -359,34 +369,9 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .padding(horizontal = 14.dp, vertical = 6.dp),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        horizontalArrangement = Arrangement.End,
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        // Switch to Full Chat View
-                                        Row(
-                                            modifier = Modifier
-                                                .clip(RoundedCornerShape(14.dp))
-                                                .background(Color(0x33102A43))
-                                                .border(1.dp, RoyalGold.copy(alpha = 0.45f), RoundedCornerShape(14.dp))
-                                                .clickable { viewModel.toggle3DViewMode() }
-                                                .padding(horizontal = 10.dp, vertical = 4.dp),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.Chat,
-                                                contentDescription = null,
-                                                tint = RoyalGoldLight,
-                                                modifier = Modifier.size(13.dp)
-                                            )
-                                            Spacer(modifier = Modifier.width(5.dp))
-                                            Text(
-                                                text = if (appLanguage == AppLanguage.ARABIC) "عرض المحادثة كاملة" else "Full Chat View",
-                                                fontFamily = AmiriFontFamily,
-                                                fontSize = 11.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = RoyalGoldLight
-                                            )
-                                        }
 
                                         // Auto-Speech Status Toggle
                                         Row(
@@ -560,155 +545,143 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                         // FULL CHAT VIEW MODE: Full-Height Chat Stream + 3D Mode Toggle Floating Pill
                         // =========================================================================
                         Column(modifier = Modifier.fillMaxSize()) {
-                            // Top floating bar to return to 3D Split View
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp, vertical = 6.dp),
-                                horizontalArrangement = Arrangement.Center
-                            ) {
-                                Row(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(18.dp))
-                                        .background(Color(0xD9060B14))
-                                        .border(1.dp, RoyalGold, RoundedCornerShape(18.dp))
-                                        .clickable { viewModel.toggle3DViewMode() }
-                                        .padding(horizontal = 14.dp, vertical = 6.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.ViewInAr,
-                                        contentDescription = null,
-                                        tint = RoyalGoldLight,
-                                        modifier = Modifier.size(16.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(
-                                        text = if (appLanguage == AppLanguage.ARABIC) "تفعيل مجسم رمسيس 3D بالنصف العلوي" else "Enable 3D Ramses in Top Half",
-                                        fontFamily = AmiriFontFamily,
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = RoyalGoldLight
-                                    )
-                                }
-                            }
 
                             if (messages.isEmpty()) {
-                                // Upper Part Center Emblem & 1.5M Token Status when session is empty
+                                // Signature Google Gemini Home Welcome Screen (like Android / iOS app)
                                 Column(
                                     modifier = Modifier
                                         .fillMaxSize()
-                                        .padding(horizontal = 24.dp, vertical = 12.dp),
+                                        .padding(horizontal = 20.dp, vertical = 12.dp),
                                     horizontalAlignment = Alignment.CenterHorizontally,
                                     verticalArrangement = Arrangement.Center
                                 ) {
+                                    // Gemini Sparkle Icon with Gradient Glow
                                     Box(
                                         modifier = Modifier
-                                            .size(80.dp)
-                                            .clip(RoundedCornerShape(22.dp))
-                                            .border(
-                                                2.dp,
-                                                Brush.sweepGradient(
+                                            .size(68.dp)
+                                            .clip(CircleShape)
+                                            .background(
+                                                Brush.radialGradient(
                                                     listOf(
-                                                        RoyalGold,
-                                                        EgyptianCyan,
-                                                        RoyalGoldLight,
-                                                        RoyalGold
+                                                        Color(0x334285F4),
+                                                        Color(0x1A00E5FF),
+                                                        Color.Transparent
                                                     )
-                                                ),
-                                                RoundedCornerShape(22.dp)
+                                                )
                                             )
-                                            .padding(3.dp)
+                                            .border(1.5.dp, Color(0xFF64B5F6).copy(alpha = 0.5f), CircleShape),
+                                        contentAlignment = Alignment.Center
                                     ) {
-                                        Image(
-                                            painter = painterResource(id = R.drawable.ask_ramses_app_icon_1791815852062),
-                                            contentDescription = "أيقونة اسأل رمسيس",
-                                            modifier = Modifier
-                                                .fillMaxSize()
-                                                .clip(RoundedCornerShape(18.dp)),
-                                            contentScale = ContentScale.Crop
+                                        Icon(
+                                            imageVector = Icons.Default.AutoAwesome,
+                                            contentDescription = "Gemini",
+                                            tint = Color(0xFF8AB4F8),
+                                            modifier = Modifier.size(36.dp)
                                         )
                                     }
 
-                                    Spacer(modifier = Modifier.height(12.dp))
+                                    Spacer(modifier = Modifier.height(14.dp))
 
+                                    // Gradient Gemini Greeting
                                     Text(
-                                        text = "ASK RAMESES",
-                                        fontFamily = CinzelFontFamily,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 22.sp,
-                                        letterSpacing = 1.sp,
-                                        color = TextPrimary
-                                    )
-
-                                    Text(
-                                        text = if (appLanguage == AppLanguage.ARABIC) "اسأل رمسيس • الحكمة الملكية" else "Royal AI Wisdom",
+                                        text = if (appLanguage == AppLanguage.ARABIC) "أهلاً بك، يا صديقي" else "Hello, friend",
                                         fontFamily = AmiriFontFamily,
-                                        fontSize = 15.sp,
-                                        color = RoyalGoldLight
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 24.sp,
+                                        color = Color.White,
+                                        textAlign = TextAlign.Center
                                     )
 
-                                    Spacer(modifier = Modifier.height(16.dp))
+                                    Text(
+                                        text = if (appLanguage == AppLanguage.ARABIC) "بم يمكنني مساعدتك اليوم؟" else "How can I help you today?",
+                                        fontFamily = AmiriFontFamily,
+                                        fontSize = 16.sp,
+                                        color = Color(0xFF9AA0A6),
+                                        textAlign = TextAlign.Center
+                                    )
 
-                                    // 1.5 Million Tokens Quota Card
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxWidth(0.92f)
-                                            .clip(RoundedCornerShape(18.dp))
-                                            .background(Color(0x22102A43))
-                                            .border(
-                                                1.dp,
-                                                if (customApiKey.isNotBlank()) Color(0xFF10B981).copy(alpha = 0.5f) else RoyalGold.copy(alpha = 0.35f),
-                                                RoundedCornerShape(18.dp)
-                                            )
-                                            .clickable { showApiKeyDialog = true }
-                                            .padding(14.dp)
+                                    Spacer(modifier = Modifier.height(20.dp))
+
+                                    // Signature Gemini Suggestion Prompt Cards (includes user's daily questions)
+                                    val geminiPrompts = if (appLanguage == AppLanguage.ARABIC) {
+                                        listOf(
+                                            Pair("💬", "ازيك عامل إيه؟"),
+                                            Pair("☀️", "الجو عامل إيه اليوم والطقس؟"),
+                                            Pair("🏛️", "حدثني عن أسرار رمسيس وأبو سمبل وتاريخ مصر"),
+                                            Pair("📝", "ساعدني في كتابة فكرة أو رسالة احترافية")
+                                        )
+                                    } else {
+                                        listOf(
+                                            Pair("💬", "How are you doing today?"),
+                                            Pair("☀️", "What's the weather like today?"),
+                                            Pair("🏛️", "Tell me the secrets of King Rameses & Abu Simbel"),
+                                            Pair("📝", "Help me draft a creative idea or message")
+                                        )
+                                    }
+
+                                    Column(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
-                                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.Center
+                                        for ((emoji, promptText) in geminiPrompts) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .clip(RoundedCornerShape(16.dp))
+                                                    .background(Color(0xFF1E1F20))
+                                                    .border(1.dp, Color(0xFF333538), RoundedCornerShape(16.dp))
+                                                    .clickable {
+                                                        viewModel.sendMessage(promptText)
+                                                    }
+                                                    .padding(horizontal = 14.dp, vertical = 10.dp)
                                             ) {
-                                                Icon(
-                                                    imageVector = if (customApiKey.isNotBlank()) Icons.Default.CheckCircle else Icons.Default.Key,
-                                                    contentDescription = null,
-                                                    tint = if (customApiKey.isNotBlank()) Color(0xFF10B981) else RoyalGold,
-                                                    modifier = Modifier.size(18.dp)
-                                                )
-                                                Spacer(modifier = Modifier.width(8.dp))
-                                                Text(
-                                                    text = if (customApiKey.isNotBlank()) {
-                                                        if (appLanguage == AppLanguage.ARABIC) "مفتاحك الشخصي نشط • 1.5M Token" else "Personal Key Active • 1.5M Tokens"
-                                                    } else {
-                                                        if (appLanguage == AppLanguage.ARABIC) "لكل مستخدم 1.5 مليون توكن مجاناً" else "1.5 Million Free Tokens per User"
-                                                    },
-                                                    fontFamily = AmiriFontFamily,
-                                                    fontWeight = FontWeight.Bold,
-                                                    fontSize = 14.sp,
-                                                    color = if (customApiKey.isNotBlank()) Color(0xFF10B981) else RoyalGoldLight
-                                                )
+                                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                                    Text(
+                                                        text = emoji,
+                                                        fontSize = 18.sp,
+                                                        modifier = Modifier.padding(end = 10.dp)
+                                                    )
+                                                    Text(
+                                                        text = promptText,
+                                                        fontFamily = AmiriFontFamily,
+                                                        fontSize = 13.sp,
+                                                        fontWeight = FontWeight.Medium,
+                                                        color = Color(0xFFE8EAED)
+                                                    )
+                                                }
                                             }
-
-                                            Spacer(modifier = Modifier.height(4.dp))
-
-                                            Text(
-                                                text = if (customApiKey.isNotBlank()) {
-                                                    if (appLanguage == AppLanguage.ARABIC)
-                                                        "أنت تعمل بمفتاح Google AI Studio الخاص بك وبأقصى طاقة استيعابية."
-                                                    else
-                                                        "Operating with your personal Google AI Studio key at full capacity."
-                                                } else {
-                                                    if (appLanguage == AppLanguage.ARABIC)
-                                                        "اضغط هنا لربط مفتاح Google AI Studio والحصول على 1,500,000 توكن مجاناً."
-                                                    else
-                                                        "Tap here to connect your personal Google AI Studio key for 1.5M free tokens."
-                                                },
-                                                fontFamily = AmiriFontFamily,
-                                                fontSize = 12.sp,
-                                                color = TextSecondary,
-                                                textAlign = TextAlign.Center
-                                            )
                                         }
+                                    }
+
+                                    Spacer(modifier = Modifier.height(14.dp))
+
+                                    // 1.5 Million Tokens Quota Status Pill
+                                    Row(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(14.dp))
+                                            .background(Color(0x1F4285F4))
+                                            .border(0.8.dp, Color(0x404285F4), RoundedCornerShape(14.dp))
+                                            .clickable { showApiKeyDialog = true }
+                                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Key,
+                                            contentDescription = null,
+                                            tint = Color(0xFF8AB4F8),
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = if (customApiKey.isNotBlank()) {
+                                                if (appLanguage == AppLanguage.ARABIC) "مفتاح AI Studio الشخصي نشط (1.5M Token)" else "Personal AI Studio Key Active (1.5M Tokens)"
+                                            } else {
+                                                if (appLanguage == AppLanguage.ARABIC) "استجابة فائقة السرعة بـ Gemini 3.8 Flash • 1.5M Token" else "Ultra-Fast with Gemini 3.8 Flash • 1.5M Tokens"
+                                            },
+                                            fontFamily = AmiriFontFamily,
+                                            fontSize = 11.sp,
+                                            color = Color(0xFF8AB4F8)
+                                        )
                                     }
                                 }
                             } else {
@@ -789,12 +762,14 @@ fun RamsesApp(viewModel: RamsesViewModel) {
 
             // Gemini Live Voice Screen (Triggered by Sparkle button)
             if (isGeminiLiveActive) {
-                val lastRamsesMessage = messages.lastOrNull { it.sender == com.example.data.model.MessageSender.RAMSES }?.text ?: ""
+                val liveSpeech = streamingMessage?.text?.takeIf { it.isNotBlank() }
+                    ?: messages.lastOrNull { it.sender == com.example.data.model.MessageSender.RAMSES }?.text
+                    ?: ""
 
                 GeminiLiveVoiceScreen(
                     voiceCallState = voiceCallState,
                     lastTranscript = currentVoiceTranscript,
-                    lastRamsesSpeech = lastRamsesMessage,
+                    lastRamsesSpeech = liveSpeech,
                     rmsDb = liveRmsDb,
                     appLanguage = appLanguage,
                     onToggleLanguage = { viewModel.toggleLanguage() },
@@ -859,6 +834,151 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                         viewModel.sendMessage(prompt)
                     }
                 )
+            }
+
+            // Google Gemini Model Selector Dialog (Flash 2.0 vs Pro 1.5)
+            if (showModelSelectorDialog) {
+                androidx.compose.ui.window.Dialog(
+                    onDismissRequest = { showModelSelectorDialog = false }
+                ) {
+                    androidx.compose.material3.Surface(
+                        shape = RoundedCornerShape(24.dp),
+                        color = Color(0xFF1E1F20),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF333538)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(20.dp)) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        imageVector = Icons.Default.AutoAwesome,
+                                        contentDescription = null,
+                                        tint = Color(0xFF8AB4F8),
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = if (appLanguage == AppLanguage.ARABIC) "اختيار نموذج Gemini" else "Select Gemini Model",
+                                        fontFamily = AmiriFontFamily,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 17.sp,
+                                        color = Color.White
+                                    )
+                                }
+                                IconButton(
+                                    onClick = { showModelSelectorDialog = false },
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Close,
+                                        contentDescription = "Close",
+                                        tint = TextSecondary
+                                    )
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(16.dp))
+
+                            // Option 1: Gemini 2.0 Flash
+                            val is20Flash = selectedModel.contains("2.0", ignoreCase = true) || !selectedModel.contains("pro", ignoreCase = true)
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(if (is20Flash) Color(0x334285F4) else Color(0xFF282A2C))
+                                    .border(1.dp, if (is20Flash) Color(0xFF8AB4F8) else Color(0xFF3C4043), RoundedCornerShape(16.dp))
+                                    .clickable {
+                                        viewModel.selectModel("gemini-2.0-flash")
+                                        showModelSelectorDialog = false
+                                    }
+                                    .padding(14.dp)
+                            ) {
+                                Column {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = "Gemini 2.0 Flash",
+                                            fontFamily = CinzelFontFamily,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 15.sp,
+                                            color = Color.White
+                                        )
+                                        Text(
+                                            text = if (appLanguage == AppLanguage.ARABIC) "موصى به • فائق السرعة" else "Recommended • Ultra Fast",
+                                            fontFamily = AmiriFontFamily,
+                                            fontSize = 11.sp,
+                                            color = Color(0xFF8AB4F8)
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        text = if (appLanguage == AppLanguage.ARABIC) "أسرع استجابة لحظية للمحادثات اليومية والطقس والمكالمات الصوتية المباشرة." else "Fastest sub-second responses for daily chats, weather, and live stream voice calls.",
+                                        fontFamily = AmiriFontFamily,
+                                        fontSize = 12.sp,
+                                        color = TextSecondary,
+                                        lineHeight = 18.sp
+                                    )
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            // Option 2: Gemini 1.5 Pro
+                            val is15Pro = selectedModel.contains("pro", ignoreCase = true)
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(if (is15Pro) Color(0x334285F4) else Color(0xFF282A2C))
+                                    .border(1.dp, if (is15Pro) Color(0xFF8AB4F8) else Color(0xFF3C4043), RoundedCornerShape(16.dp))
+                                    .clickable {
+                                        viewModel.selectModel("gemini-1.5-pro")
+                                        showModelSelectorDialog = false
+                                    }
+                                    .padding(14.dp)
+                            ) {
+                                Column {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = "Gemini 1.5 Pro",
+                                            fontFamily = CinzelFontFamily,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 15.sp,
+                                            color = Color.White
+                                        )
+                                        Text(
+                                            text = if (appLanguage == AppLanguage.ARABIC) "تفكير عميق" else "Deep Reasoning",
+                                            fontFamily = AmiriFontFamily,
+                                            fontSize = 11.sp,
+                                            color = Color(0xFFF59E0B)
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        text = if (appLanguage == AppLanguage.ARABIC) "الأفضل في تحليل الأكواد المعقدة، التفكير المنطقي المتسلسل، والبحوث الطويلة." else "Best for complex code analysis, multi-step logic, and detailed research.",
+                                        fontFamily = AmiriFontFamily,
+                                        fontSize = 12.sp,
+                                        color = TextSecondary,
+                                        lineHeight = 18.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }

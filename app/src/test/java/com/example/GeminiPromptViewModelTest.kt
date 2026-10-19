@@ -19,8 +19,13 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
 @OptIn(ExperimentalCoroutinesApi::class)
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34])
 class GeminiPromptViewModelTest {
 
     private val testDispatcher = StandardTestDispatcher()
@@ -100,7 +105,7 @@ class GeminiPromptViewModelTest {
             }
             .build()
 
-        val viewModel = object : GeminiPromptViewModel(mockClient) {
+        val viewModel = object : GeminiPromptViewModel(mockClient, testDispatcher) {
             // Override to provide a guaranteed test key for mock test
             override fun getApiKeyFromBuildConfig(): String {
                 val realKey = super.getApiKeyFromBuildConfig()
@@ -143,7 +148,7 @@ class GeminiPromptViewModelTest {
             }
             .build()
 
-        val viewModel = object : GeminiPromptViewModel(mockClient) {
+        val viewModel = object : GeminiPromptViewModel(mockClient, testDispatcher) {
             override fun getApiKeyFromBuildConfig(): String = "INVALID_KEY"
         }
 

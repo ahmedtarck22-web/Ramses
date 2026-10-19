@@ -14,7 +14,6 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -31,11 +30,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Autorenew
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Remove
-import androidx.compose.material.icons.filled.ViewInAr
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -55,7 +51,6 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -80,12 +75,15 @@ import kotlin.math.sin
 
 /**
  * High-fidelity 3D Avatar Viewport for King Ramses II.
- * Features:
- * - Direct SceneView loading of ramses_glb.glb (with fallback to ramses_statue.glb)
- * - Live animated body gestures (sway, forward nod, royal breathing)
- * - Real-time lipsync mouth articulation and golden speech acoustic waves
- * - Interactive 360-degree touch rotation & zoom
- * - Status header indicating live royal speaking, listening, or reasoning
+ *
+ * Implements user requirements:
+ * - Direct SceneView loading of Ramses.final.glb exclusively.
+ * - Perfectly centered full-body representation (scaled and centered so the complete figure from crown to feet is visible).
+ * - Rotated by -90 degrees around Y so King Ramses faces forward directly at the user.
+ * - No manual drag/rotation/zoom gestures.
+ * - Prominent royal body language & head gestures when the AI speaks.
+ * - Real-time acoustic lipsync waves radiating from King Ramses's mouth area.
+ * - Deep navy/midnight pharaonic background.
  */
 @Composable
 fun RamsesAvatar3DView(
@@ -106,10 +104,10 @@ fun RamsesAvatar3DView(
 
     var currentModelNode by remember { mutableStateOf<ModelNode?>(null) }
     var isLoading by remember { mutableStateOf(true) }
-    var autoRotate by remember { mutableStateOf(false) }
-    var manualRotationY by remember { mutableFloatStateOf(0f) }
-    var manualRotationX by remember { mutableFloatStateOf(2f) }
-    var currentScale by remember { mutableFloatStateOf(1.0f) }
+
+    // Front-facing orientation rotated 180 degrees per user request (from 90f to 270f)
+    val baseRotationY = 270f
+    val baseScale = 0.54f
 
     // Multi-track continuous animations for lifelike presence
     val infiniteTransition = rememberInfiniteTransition(label = "ramses_avatar_dynamics")
@@ -119,7 +117,7 @@ fun RamsesAvatar3DView(
         initialValue = 0f,
         targetValue = (2 * Math.PI).toFloat(),
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 3200, easing = LinearEasing),
+            animation = tween(durationMillis = 3400, easing = LinearEasing),
             repeatMode = RepeatMode.Restart
         ),
         label = "avatar_breathing"
@@ -130,43 +128,31 @@ fun RamsesAvatar3DView(
         initialValue = 0f,
         targetValue = (2 * Math.PI).toFloat(),
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 280, easing = LinearEasing),
+            animation = tween(durationMillis = 240, easing = LinearEasing),
             repeatMode = RepeatMode.Restart
         ),
         label = "avatar_lipsync"
     )
 
-    // 3. Royal body gesture & head nod cycle when speaking
+    // 3. Royal hand-to-chin gesture & speech emphasis cycle (slow dignified cadence)
     val speechNodCycle by infiniteTransition.animateFloat(
         initialValue = 0f,
         targetValue = (2 * Math.PI).toFloat(),
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1400, easing = LinearEasing),
+            animation = tween(durationMillis = 1800, easing = LinearEasing),
             repeatMode = RepeatMode.Restart
         ),
         label = "avatar_nod"
     )
 
-    // 4. Subtle ambient orbit when autoRotate is toggled
-    val slowOrbitAngle by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 24000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "avatar_orbit"
-    )
-
-    // Load the 3D model
+    // Load the 3D model: exclusively Ramses.final.glb
     LaunchedEffect(Unit) {
         isLoading = true
         childNodes.clear()
         currentModelNode = null
 
         val candidatePaths = listOf(
-            "models/ramses_glb.glb",
-            "models/ramses_statue.glb"
+            "models/Ramses.final.glb"
         )
 
         for (path in candidatePaths) {
@@ -175,20 +161,36 @@ fun RamsesAvatar3DView(
                 if (instance != null) {
                     val node = ModelNode(
                         modelInstance = instance,
-                        scaleToUnits = currentScale
+                        scaleToUnits = baseScale
                     )
+                    // Center the model's bounding box at (0, 0, 0) so the whole body is centered in viewport
+                    node.centerOrigin(Position(0f, 0f, 0f))
+
+                    // Initial front-facing posture (rotated 180 degrees to 270f)
+                    node.rotation = Rotation(x = 0f, y = baseRotationY, z = 0f)
+                    node.position = Position(x = 0f, y = -0.02f, z = 0f)
+                    node.scale = Scale(baseScale, baseScale, baseScale)
+
+                    // Initialize morph targets to 0
+                    try {
+                        node.setMorphWeights(floatArrayOf(0f, 0f), 0)
+                        node.renderableNodes.forEach {
+                            it.setMorphWeights(floatArrayOf(0f, 0f), 0)
+                        }
+                    } catch (_: Exception) {}
+
                     currentModelNode = node
                     childNodes.add(node)
                     break
                 }
             } catch (e: Exception) {
-                // Try fallback
+                // Ignore and keep safe
             }
         }
         isLoading = false
     }
 
-    // Dynamic real-time transform updates reacting to speech, lipsync, and touch gestures
+    // Dynamic real-time transform updates: mouth lip-sync, hand to chin, and majestic breathing
     LaunchedEffect(
         isSpeaking,
         isListening,
@@ -196,52 +198,50 @@ fun RamsesAvatar3DView(
         rmsDb,
         breathingPhase,
         speechSyllableCycle,
-        speechNodCycle,
-        slowOrbitAngle,
-        autoRotate,
-        manualRotationY,
-        manualRotationX,
-        currentScale
+        speechNodCycle
     ) {
         currentModelNode?.let { node ->
-            // Base idle breathing & organic royal head tilting
-            val idleSwayY = sin(breathingPhase * 0.7f) * 1.8f
-            val idleTiltX = cos(breathingPhase) * 1.5f
-            val idleTiltZ = sin(breathingPhase * 0.5f) * 1.4f
-            val idleElevationY = (sin(breathingPhase) * 0.014f)
-            val idleScale = 1.0f + (sin(breathingPhase) * 0.009f)
+            // Subtle, dignified breathing (gentle, majestic posture without shaking)
+            val idleSwayY = sin(breathingPhase * 0.4f) * 0.4f
+            val idleElevationY = -0.02f + (sin(breathingPhase) * 0.004f)
 
-            // Dynamic speech modulation
-            val (speechTiltX, speechSwayY, speechLeanZ) = if (isSpeaking) {
-                val nod = (sin(speechNodCycle) * 3.8f) + 3.0f // Natural dignified forward nod
-                val sway = sin(speechNodCycle * 0.5f) * 2.2f // Subtle torso sway
-                val lean = -0.04f + (sin(speechNodCycle) * 0.02f) // Lean slightly closer to the user
-                Triple(nod, sway, lean)
-            } else if (isListening) {
-                // Attentive royal posture: slight head tilt to the side
-                Triple(-1.5f, 2.8f, -0.02f)
+            // 1. Real 3D Mouth Lip-Sync: mouth physically opens & closes with speech syllables & volume
+            val mouthAperture = if (isSpeaking) {
+                val syllablePulse = (sin(speechSyllableCycle) + 1f) * 0.5f // 0.0 to 1.0
+                val volumeBoost = (rmsDb.coerceIn(0f, 15f) / 15f) * 0.35f
+                ((syllablePulse * 0.80f) + volumeBoost).coerceIn(0.12f, 1.0f)
+            } else {
+                0f
+            }
+
+            // 2. Real 3D Hand to Chin Gesture: right hand raises near chin when speaking or reasoning
+            val handToChin = if (isSpeaking) {
+                // Dignified hand gesture near chin, gently gesturing with speech cadence
+                val nodCycle = sin(speechNodCycle) * 0.12f
+                (0.88f + nodCycle).coerceIn(0.70f, 1.0f)
             } else if (isThinking) {
-                // Contemplative gaze slightly upwards
-                Triple(-3.5f, -1.8f, 0.0f)
+                // Contemplative hand resting thoughtfully near chin
+                0.82f
             } else {
-                Triple(0f, 0f, 0f)
+                // Resting comfortably
+                0f
             }
 
-            val totalY = if (autoRotate) {
-                (slowOrbitAngle + manualRotationY + idleSwayY + speechSwayY) % 360f
-            } else {
-                (manualRotationY + idleSwayY + speechSwayY) % 360f
-            }
+            // Apply 3D Morph Weights directly to mesh vertices on GPU
+            try {
+                node.setMorphWeights(floatArrayOf(mouthAperture, handToChin), 0)
+                node.renderableNodes.forEach { rNode ->
+                    rNode.setMorphWeights(floatArrayOf(mouthAperture, handToChin), 0)
+                }
+            } catch (_: Exception) {}
 
-            val totalX = (manualRotationX + idleTiltX + speechTiltX).coerceIn(-35f, 35f)
-            val totalZ = if (isSpeaking) (speechSwayY * 0.3f) else idleTiltZ
+            // Stable dignified posture: gentle royal stance, NO harsh shaking
+            val speechForwardTilt = if (isSpeaking) 0.8f else 0f
+            val totalY = (baseRotationY + idleSwayY) % 360f
 
-            // Subtle dynamic chest expansion when speaking / breathing
-            val dynamicScale = currentScale * (if (isSpeaking) 1.018f + (sin(speechNodCycle) * 0.01f) else idleScale)
-
-            node.rotation = Rotation(x = totalX, y = totalY, z = totalZ)
-            node.position = Position(x = 0f, y = idleElevationY, z = speechLeanZ)
-            node.scale = Scale(dynamicScale, dynamicScale, dynamicScale)
+            node.rotation = Rotation(x = speechForwardTilt, y = totalY, z = 0f)
+            node.position = Position(x = 0f, y = idleElevationY, z = 0f)
+            node.scale = Scale(baseScale, baseScale, baseScale)
         }
     }
 
@@ -252,21 +252,13 @@ fun RamsesAvatar3DView(
             .background(
                 brush = Brush.verticalGradient(
                     colors = listOf(
-                        Color(0xFF03050C),
-                        Color(0xFF080D1A),
-                        Color(0xFF141006),
-                        Color(0xFF060912)
+                        Color(0xFF040816),
+                        Color(0xFF071126),
+                        Color(0xFF0B1B3D),
+                        Color(0xFF050B18)
                     )
                 )
             )
-            .pointerInput(Unit) {
-                detectDragGestures { change, dragAmount ->
-                    change.consume()
-                    autoRotate = false
-                    manualRotationY += dragAmount.x * 0.55f
-                    manualRotationX = (manualRotationX - dragAmount.y * 0.35f).coerceIn(-35f, 35f)
-                }
-            }
     ) {
         // 1. The 3D Filament SceneView
         Scene(
@@ -277,20 +269,20 @@ fun RamsesAvatar3DView(
             childNodes = childNodes
         )
 
-        // 2. Real-time Lipsync / Phonetic Acoustic Waves overlay radiating from King Ramses's mouth
+        // 2. Real-time Lipsync / Phonetic Acoustic Waves radiating from King Ramses's mouth area
         if (isSpeaking) {
             Canvas(
-                modifier = Modifier
-                    .fillMaxSize()
+                modifier = Modifier.fillMaxSize()
             ) {
-                val mouthCenter = Offset(size.width * 0.50f, size.height * 0.44f)
+                // Model is centered; mouth is at approximately 35% height and 50% width
+                val mouthCenter = Offset(size.width * 0.50f, size.height * 0.35f)
                 val baseAperture = (sin(speechSyllableCycle) + 1f) * 0.5f // 0.0 to 1.0
-                val volumeBoost = (rmsDb.coerceIn(0f, 15f) / 15f) * 18f
+                val volumeBoost = (rmsDb.coerceIn(0f, 15f) / 15f) * 22f
 
                 // Concentric royal golden sound ripples around lips/chin
-                for (step in 1..3) {
-                    val rippleRadius = (22f * step) + (baseAperture * 20f) + volumeBoost
-                    val alpha = ((4 - step) / 4f) * (0.35f + (baseAperture * 0.35f))
+                for (step in 1..4) {
+                    val rippleRadius = (20f * step) + (baseAperture * 22f) + volumeBoost
+                    val alpha = ((5 - step) / 5f) * (0.40f + (baseAperture * 0.35f))
 
                     drawCircle(
                         color = RoyalGold.copy(alpha = alpha),
@@ -304,200 +296,92 @@ fun RamsesAvatar3DView(
                 drawCircle(
                     brush = Brush.radialGradient(
                         colors = listOf(
-                            RoyalGoldLight.copy(alpha = 0.75f),
-                            Color(0x33D4AF37),
+                            RoyalGoldLight.copy(alpha = 0.85f),
+                            Color(0x55D4AF37),
                             Color.Transparent
                         ),
                         center = mouthCenter,
-                        radius = 28f + (baseAperture * 16f)
+                        radius = 32f + (baseAperture * 18f)
                     ),
-                    radius = 28f + (baseAperture * 16f),
+                    radius = 32f + (baseAperture * 18f),
                     center = mouthCenter
                 )
             }
         }
 
-        // 3. Ambient Ancient Temple Columns & Celestial Aura (Stylized background accents)
-        Box(
+        // 3. Royal Status Badge at top of avatar viewport
+        Row(
             modifier = Modifier
-                .fillMaxSize()
-                .padding(16.dp)
+                .align(Alignment.TopCenter)
+                .padding(top = 10.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .background(Color(0xD9060B14))
+                .border(1.dp, RoyalGold.copy(alpha = 0.5f), RoundedCornerShape(16.dp))
+                .padding(horizontal = 12.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            // Top Status Pill (Royal State Indicator)
-            Row(
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .clip(RoundedCornerShape(20.dp))
-                    .background(Color(0xD9060B14))
-                    .border(
-                        1.dp,
-                        when {
-                            isSpeaking -> RoyalGold
-                            isListening -> Color(0xFF00E5FF)
-                            isThinking -> Color(0xFF818CF8)
-                            else -> RoyalGold.copy(alpha = 0.35f)
-                        },
-                        RoundedCornerShape(20.dp)
-                    )
-                    .padding(horizontal = 14.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.Center
-            ) {
-                // Status Beacon Light
+            if (isSpeaking) {
+                Icon(
+                    imageVector = Icons.Default.GraphicEq,
+                    contentDescription = null,
+                    tint = RoyalGoldLight,
+                    modifier = Modifier.size(16.dp)
+                )
+                Text(
+                    text = if (appLanguage == AppLanguage.ARABIC) "الملك رمسيس يتحدث إليك..." else "King Rameses is speaking...",
+                    fontFamily = if (appLanguage == AppLanguage.ARABIC) AmiriFontFamily else CinzelFontFamily,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = RoyalGoldLight
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                // Stop speech action
                 Box(
                     modifier = Modifier
-                        .size(8.dp)
                         .clip(CircleShape)
-                        .background(
-                            when {
-                                isSpeaking -> RoyalGoldLight
-                                isListening -> Color(0xFF00E5FF)
-                                isThinking -> Color(0xFF818CF8)
-                                else -> Color(0xFF10B981)
-                            }
-                        )
-                )
-
-                Spacer(modifier = Modifier.width(8.dp))
-
-                val statusText = when {
-                    isSpeaking -> if (appLanguage == AppLanguage.ARABIC) "الملك رمسيس يتحدث إليك الآن..." else "Rameses is speaking to you..."
-                    isListening -> if (appLanguage == AppLanguage.ARABIC) "يستمع لصوتك بدقة..." else "Listening to your voice..."
-                    isThinking -> if (appLanguage == AppLanguage.ARABIC) "يستحضر الحكمة الفرعونية..." else "Consulting royal wisdom..."
-                    else -> if (appLanguage == AppLanguage.ARABIC) "الملك رمسيس الثاني • ثلاثي الأبعاد" else "King Rameses II • 3D Avatar"
+                        .background(Color(0x33FFFFFF))
+                        .clickable { onStopSpeaking() }
+                        .padding(4.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.VolumeOff,
+                        contentDescription = "كتم الصوت",
+                        tint = Color.White.copy(alpha = 0.85f),
+                        modifier = Modifier.size(13.dp)
+                    )
                 }
-
+            } else if (isThinking) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(14.dp),
+                    color = EgyptianCyan,
+                    strokeWidth = 2.dp
+                )
                 Text(
-                    text = statusText,
-                    fontFamily = AmiriFontFamily,
-                    fontWeight = FontWeight.Bold,
+                    text = if (appLanguage == AppLanguage.ARABIC) "رمسيس يستحضر الحكمة..." else "Rameses is reasoning...",
+                    fontFamily = if (appLanguage == AppLanguage.ARABIC) AmiriFontFamily else CinzelFontFamily,
                     fontSize = 12.sp,
-                    color = when {
-                        isSpeaking -> RoyalGoldLight
-                        isListening -> Color(0xFF00E5FF)
-                        isThinking -> Color(0xFFC7D2FE)
-                        else -> Color.White
-                    }
+                    color = EgyptianCyan
                 )
-
-                if (isSpeaking) {
-                    Spacer(modifier = Modifier.width(6.dp))
-                    // Mini live equalizer waves next to speech status
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(2.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        val wave1 = (sin(speechSyllableCycle) + 1f) * 6f + 3f
-                        val wave2 = (cos(speechSyllableCycle) + 1f) * 6f + 3f
-                        val wave3 = (sin(speechSyllableCycle * 1.5f) + 1f) * 6f + 3f
-                        Box(modifier = Modifier.width(2.5.dp).height(wave1.dp).clip(RoundedCornerShape(1.dp)).background(RoyalGold))
-                        Box(modifier = Modifier.width(2.5.dp).height(wave2.dp).clip(RoundedCornerShape(1.dp)).background(RoyalGoldLight))
-                        Box(modifier = Modifier.width(2.5.dp).height(wave3.dp).clip(RoundedCornerShape(1.dp)).background(RoyalGold))
-                    }
-                }
-            }
-
-            // Floating Controls Dock (Top Right & Bottom Right)
-            Column(
-                modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .clip(RoundedCornerShape(18.dp))
-                    .background(Color(0xB30B1220))
-                    .border(1.dp, RoyalGold.copy(alpha = 0.3f), RoundedCornerShape(18.dp))
-                    .padding(4.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                // Auto-rotate toggle
-                IconButton(
-                    onClick = { autoRotate = !autoRotate },
-                    modifier = Modifier.size(34.dp).testTag("avatar_autorotate_toggle")
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Autorenew,
-                        contentDescription = "Auto Rotate",
-                        tint = if (autoRotate) RoyalGoldLight else Color.White.copy(alpha = 0.6f),
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-
-                // Reset Orientation to front
-                IconButton(
-                    onClick = {
-                        manualRotationY = 0f
-                        manualRotationX = 2f
-                        currentScale = 1.0f
-                        autoRotate = false
-                    },
-                    modifier = Modifier.size(34.dp).testTag("avatar_reset_orientation")
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Refresh,
-                        contentDescription = "Reset View",
-                        tint = Color.White.copy(alpha = 0.6f),
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-
-                // Zoom In (+)
-                IconButton(
-                    onClick = { currentScale = (currentScale + 0.15f).coerceAtMost(2.0f) },
-                    modifier = Modifier.size(34.dp).testTag("avatar_zoom_in")
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Add,
-                        contentDescription = "Zoom In",
-                        tint = Color.White.copy(alpha = 0.7f),
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-
-                // Zoom Out (-)
-                IconButton(
-                    onClick = { currentScale = (currentScale - 0.15f).coerceAtLeast(0.6f) },
-                    modifier = Modifier.size(34.dp).testTag("avatar_zoom_out")
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Remove,
-                        contentDescription = "Zoom Out",
-                        tint = Color.White.copy(alpha = 0.7f),
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-
-                // Auto-speech toggle / Stop speech
-                IconButton(
-                    onClick = {
-                        if (isSpeaking) {
-                            onStopSpeaking()
-                        } else {
-                            onToggleAutoSpeak()
-                        }
-                    },
-                    modifier = Modifier.size(34.dp).testTag("avatar_voice_toggle")
-                ) {
-                    Icon(
-                        imageVector = if (isSpeaking || isAutoSpeakEnabled) Icons.AutoMirrored.Filled.VolumeUp else Icons.AutoMirrored.Filled.VolumeOff,
-                        contentDescription = "Audio Speech",
-                        tint = if (isSpeaking) RoyalGoldLight else if (isAutoSpeakEnabled) Color(0xFF10B981) else Color.White.copy(alpha = 0.4f),
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-            }
-
-            // Bottom hint: interactive gestures notice
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(Color(0x80040711))
-                    .padding(horizontal = 10.dp, vertical = 3.dp)
-            ) {
+            } else if (isListening) {
+                Icon(
+                    imageVector = Icons.Default.AutoAwesome,
+                    contentDescription = null,
+                    tint = EgyptianCyan,
+                    modifier = Modifier.size(14.dp)
+                )
                 Text(
-                    text = if (appLanguage == AppLanguage.ARABIC) "اسحب لتدوير رمسيس 360° • كبّر وقرّب بحرية" else "Drag to rotate 360° • Pinch / Zoom freely",
-                    fontSize = 10.sp,
-                    color = Color.White.copy(alpha = 0.55f),
-                    fontFamily = AmiriFontFamily
+                    text = if (appLanguage == AppLanguage.ARABIC) "رمسيس يستمع لصوتك..." else "Rameses is listening...",
+                    fontFamily = if (appLanguage == AppLanguage.ARABIC) AmiriFontFamily else CinzelFontFamily,
+                    fontSize = 12.sp,
+                    color = EgyptianCyan
+                )
+            } else {
+                Text(
+                    text = if (appLanguage == AppLanguage.ARABIC) "الملك رمسيس الثاني جاهز لإجابتك" else "King Rameses II is ready",
+                    fontFamily = if (appLanguage == AppLanguage.ARABIC) AmiriFontFamily else CinzelFontFamily,
+                    fontSize = 11.sp,
+                    color = RoyalGoldLight.copy(alpha = 0.85f)
                 )
             }
         }

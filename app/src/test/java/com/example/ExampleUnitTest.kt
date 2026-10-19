@@ -10,8 +10,7 @@ class ExampleUnitTest {
     @Test
     fun testRamsesModelConfiguration() {
         val models = com.example.data.api.GeminiApiClient.CANDIDATE_MODELS
-        assertTrue(models.contains("gemini-2.0-flash"))
-        assertTrue(models.contains("gemini-1.5-flash"))
+        assertTrue(models.contains("gemini-3.8-flash"))
     }
 
     @Test

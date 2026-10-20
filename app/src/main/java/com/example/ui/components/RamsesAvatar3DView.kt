@@ -95,7 +95,8 @@ fun RamsesAvatar3DView(
     appLanguage: AppLanguage = AppLanguage.ARABIC,
     onStopSpeaking: () -> Unit = {},
     onToggleAutoSpeak: () -> Unit = {},
-    isAutoSpeakEnabled: Boolean = true
+    isAutoSpeakEnabled: Boolean = true,
+    showBackgroundGradient: Boolean = true
 ) {
     val engine = rememberEngine()
     val modelLoader = rememberModelLoader(engine = engine)
@@ -105,8 +106,8 @@ fun RamsesAvatar3DView(
     var currentModelNode by remember { mutableStateOf<ModelNode?>(null) }
     var isLoading by remember { mutableStateOf(true) }
 
-    // Front-facing orientation rotated 180 degrees per user request (from 90f to 270f)
-    val baseRotationY = 270f
+    // Orientation rotated 180 degrees per user request (from 270f to 90f)
+    val baseRotationY = 90f
     val baseScale = 0.54f
 
     // Multi-track continuous animations for lifelike presence
@@ -245,8 +246,8 @@ fun RamsesAvatar3DView(
         }
     }
 
-    Box(
-        modifier = modifier
+    val containerModifier = if (showBackgroundGradient) {
+        modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(bottomStart = 24.dp, bottomEnd = 24.dp))
             .background(
@@ -259,6 +260,12 @@ fun RamsesAvatar3DView(
                     )
                 )
             )
+    } else {
+        modifier.fillMaxWidth()
+    }
+
+    Box(
+        modifier = containerModifier
     ) {
         // 1. The 3D Filament SceneView
         Scene(
@@ -310,18 +317,19 @@ fun RamsesAvatar3DView(
         }
 
         // 3. Royal Status Badge at top of avatar viewport
-        Row(
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .padding(top = 10.dp)
-                .clip(RoundedCornerShape(16.dp))
-                .background(Color(0xD9060B14))
-                .border(1.dp, RoyalGold.copy(alpha = 0.5f), RoundedCornerShape(16.dp))
-                .padding(horizontal = 12.dp, vertical = 5.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            if (isSpeaking) {
+        // 3. Royal Status Badge at top of avatar viewport (Only active during speech or reasoning per user request)
+        if (isSpeaking) {
+            Row(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 10.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(Color(0xD9060B14))
+                    .border(1.dp, RoyalGold.copy(alpha = 0.5f), RoundedCornerShape(16.dp))
+                    .padding(horizontal = 12.dp, vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
                 Icon(
                     imageVector = Icons.Default.GraphicEq,
                     contentDescription = null,
@@ -351,7 +359,19 @@ fun RamsesAvatar3DView(
                         modifier = Modifier.size(13.dp)
                     )
                 }
-            } else if (isThinking) {
+            }
+        } else if (isThinking) {
+            Row(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 10.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(Color(0xD9060B14))
+                    .border(1.dp, EgyptianCyan.copy(alpha = 0.5f), RoundedCornerShape(16.dp))
+                    .padding(horizontal = 12.dp, vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
                 CircularProgressIndicator(
                     modifier = Modifier.size(14.dp),
                     color = EgyptianCyan,
@@ -362,26 +382,6 @@ fun RamsesAvatar3DView(
                     fontFamily = if (appLanguage == AppLanguage.ARABIC) AmiriFontFamily else CinzelFontFamily,
                     fontSize = 12.sp,
                     color = EgyptianCyan
-                )
-            } else if (isListening) {
-                Icon(
-                    imageVector = Icons.Default.AutoAwesome,
-                    contentDescription = null,
-                    tint = EgyptianCyan,
-                    modifier = Modifier.size(14.dp)
-                )
-                Text(
-                    text = if (appLanguage == AppLanguage.ARABIC) "رمسيس يستمع لصوتك..." else "Rameses is listening...",
-                    fontFamily = if (appLanguage == AppLanguage.ARABIC) AmiriFontFamily else CinzelFontFamily,
-                    fontSize = 12.sp,
-                    color = EgyptianCyan
-                )
-            } else {
-                Text(
-                    text = if (appLanguage == AppLanguage.ARABIC) "الملك رمسيس الثاني جاهز لإجابتك" else "King Rameses II is ready",
-                    fontFamily = if (appLanguage == AppLanguage.ARABIC) AmiriFontFamily else CinzelFontFamily,
-                    fontSize = 11.sp,
-                    color = RoyalGoldLight.copy(alpha = 0.85f)
                 )
             }
         }

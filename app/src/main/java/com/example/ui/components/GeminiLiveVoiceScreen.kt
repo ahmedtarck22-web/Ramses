@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -214,9 +215,10 @@ fun GeminiLiveVoiceScreen(
                 .background(
                     Brush.verticalGradient(
                         colors = listOf(
-                            Color(0xFF040711),
-                            Color(0xFF080F22),
-                            Color(0xFF03050C)
+                            Color(0xFF040816),
+                            Color(0xFF071126),
+                            Color(0xFF0B1B3D),
+                            Color(0xFF050B18)
                         )
                     )
                 )
@@ -284,29 +286,18 @@ fun GeminiLiveVoiceScreen(
                     }
                 }
 
-                // 2. Centerpiece: King Ramses 3D Model with real-time lip-sync and hand-to-chin gestures (Replaces Orb)
+                // 2. Centerpiece: King Ramses 3D Model directly on royal navy background without bounding card
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(1f, fill = false)
+                        .weight(1f)
                 ) {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(320.dp)
-                            .clip(RoundedCornerShape(24.dp))
-                            .background(
-                                Brush.verticalGradient(
-                                    colors = listOf(
-                                        Color(0xFF040816),
-                                        Color(0xFF08122A),
-                                        Color(0xFF050B18)
-                                    )
-                                )
-                            )
-                            .border(1.5.dp, RoyalGold.copy(alpha = 0.5f), RoundedCornerShape(24.dp)),
+                            .weight(1f),
                         contentAlignment = Alignment.Center
                     ) {
                         RamsesAvatar3DView(
@@ -317,11 +308,12 @@ fun GeminiLiveVoiceScreen(
                             rmsDb = rmsDb,
                             appLanguage = appLanguage,
                             onStopSpeaking = onStopSpeaking,
-                            isAutoSpeakEnabled = true
+                            isAutoSpeakEnabled = true,
+                            showBackgroundGradient = false
                         )
                     }
 
-                    Spacer(modifier = Modifier.height(10.dp))
+                    Spacer(modifier = Modifier.height(6.dp))
 
                     // Audio Frequency Bars
                     GeminiLiveEqualizerBars(
@@ -330,78 +322,74 @@ fun GeminiLiveVoiceScreen(
                     )
                 }
 
-                // 3. Live Subtitle & Transcript Card (Seamless Speech Flow)
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    val statusText = when (voiceCallState) {
-                        VoiceCallState.LISTENING -> if (isArabic) "يستمع لصوتك الآن..." else "Listening to your voice..."
-                        VoiceCallState.THINKING -> if (isArabic) "رمسيس يستحضر الإجابة..." else "Rameses is reasoning..."
-                        VoiceCallState.SPEAKING -> if (isArabic) "رمسيس يتحدث..." else "Rameses is speaking..."
-                        VoiceCallState.IDLE -> if (isArabic) "جاهز للاستماع" else "Ready to listen"
-                    }
+                // 3. Live Spoken Subtitle & Transcript (Only shown when speaking, thinking, or user speaks)
+                val statusText = when (voiceCallState) {
+                    VoiceCallState.THINKING -> if (isArabic) "رمسيس يستحضر الإجابة..." else "Rameses is reasoning..."
+                    VoiceCallState.SPEAKING -> if (isArabic) "رمسيس يتحدث..." else "Rameses is speaking..."
+                    else -> ""
+                }
 
-                    Text(
-                        text = statusText,
-                        fontFamily = AmiriFontFamily,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp,
-                        color = when (voiceCallState) {
-                            VoiceCallState.LISTENING -> Color(0xFF00E5FF)
-                            VoiceCallState.SPEAKING -> RoyalGoldLight
-                            VoiceCallState.THINKING -> Color(0xFF818CF8)
-                            VoiceCallState.IDLE -> TextSecondary
-                        },
-                        textAlign = TextAlign.Center
-                    )
+                val displayText = if (voiceCallState == VoiceCallState.SPEAKING && lastRamsesSpeech.isNotBlank()) {
+                    lastRamsesSpeech
+                } else if (lastTranscript.isNotBlank()) {
+                    "« $lastTranscript »"
+                } else {
+                    ""
+                }
 
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    Surface(
+                if (statusText.isNotBlank() || displayText.isNotBlank()) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(95.dp),
-                        shape = RoundedCornerShape(20.dp),
-                        color = Color(0x330B172E),
-                        border = androidx.compose.foundation.BorderStroke(
-                            1.dp,
-                            when (voiceCallState) {
-                                VoiceCallState.SPEAKING -> RoyalGold.copy(alpha = 0.5f)
-                                VoiceCallState.LISTENING -> Color(0xFF00E5FF).copy(alpha = 0.4f)
-                                else -> Color.White.copy(alpha = 0.10f)
-                            }
-                        )
+                            .padding(horizontal = 8.dp)
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(12.dp)
-                                .clickable {
-                                    // Tap to interrupt speech if Ramses is currently speaking
-                                    if (voiceCallState == VoiceCallState.SPEAKING) {
-                                        onStopSpeaking()
-                                        onStartListening()
-                                    }
-                                },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            val displayText = if (voiceCallState == VoiceCallState.SPEAKING && lastRamsesSpeech.isNotBlank()) {
-                                lastRamsesSpeech
-                            } else if (lastTranscript.isNotBlank()) {
-                                "« $lastTranscript »"
-                            } else {
-                                if (isArabic) "تحدث بصوتك مباشرة وسيجيبك رمسيس فوراً..." else "Speak naturally and Rameses will reply instantly..."
-                            }
-
+                        if (statusText.isNotBlank()) {
                             Text(
-                                text = displayText,
+                                text = statusText,
                                 fontFamily = AmiriFontFamily,
+                                fontWeight = FontWeight.Bold,
                                 fontSize = 14.sp,
-                                color = if (voiceCallState == VoiceCallState.SPEAKING) RoyalGoldLight else Color.White,
-                                textAlign = TextAlign.Center,
-                                lineHeight = 20.sp
+                                color = if (voiceCallState == VoiceCallState.SPEAKING) RoyalGoldLight else Color(0xFF818CF8),
+                                textAlign = TextAlign.Center
                             )
+                            Spacer(modifier = Modifier.height(6.dp))
+                        }
+
+                        if (displayText.isNotBlank()) {
+                            Surface(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 55.dp, max = 95.dp),
+                                shape = RoundedCornerShape(20.dp),
+                                color = Color(0x330B172E),
+                                border = androidx.compose.foundation.BorderStroke(
+                                    1.dp,
+                                    if (voiceCallState == VoiceCallState.SPEAKING) RoyalGold.copy(alpha = 0.5f) else Color.White.copy(alpha = 0.10f)
+                                )
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(12.dp)
+                                        .clickable {
+                                            if (voiceCallState == VoiceCallState.SPEAKING) {
+                                                onStopSpeaking()
+                                                onStartListening()
+                                            }
+                                        },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = displayText,
+                                        fontFamily = AmiriFontFamily,
+                                        fontSize = 14.sp,
+                                        color = if (voiceCallState == VoiceCallState.SPEAKING) RoyalGoldLight else Color.White,
+                                        textAlign = TextAlign.Center,
+                                        lineHeight = 20.sp
+                                    )
+                                }
+                            }
                         }
                     }
                 }

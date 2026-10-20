@@ -72,7 +72,7 @@ fun RamsesSceneView(
     var currentModelNode by remember { mutableStateOf<ModelNode?>(null) }
     var isLoading by remember { mutableStateOf(true) }
     var autoRotate by remember { mutableStateOf(initialAutoRotate) }
-    var manualRotationY by remember { mutableFloatStateOf(270f) }
+    var manualRotationY by remember { mutableFloatStateOf(90f) }
     var manualRotationX by remember { mutableFloatStateOf(0f) }
     var currentScale by remember { mutableFloatStateOf(0.55f) }
 

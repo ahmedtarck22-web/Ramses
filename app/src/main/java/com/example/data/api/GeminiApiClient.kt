@@ -9,8 +9,13 @@ import com.example.data.model.ChatMessage
 import com.example.data.model.GroundingSource
 import com.example.data.model.MessageSender
 import com.example.data.model.RagDocument
+import com.google.firebase.Firebase
+import com.google.firebase.ai.ai
+import com.google.firebase.ai.type.content
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -28,17 +33,18 @@ class GeminiApiClient {
         private const val TAG = "GeminiApiClient"
         private const val BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
-        // Primary ultra-fast model for instant sub-second TTFT and responsive dialogue
+        // Primary ultra-fast models for instant sub-second TTFT and responsive dialogue
         val CANDIDATE_MODELS = listOf(
+            "gemini-3.8-flash",
+            "gemini-3.5-flash-lite",
             "gemini-2.0-flash",
             "gemini-1.5-flash",
-            "gemini-1.5-flash-8b",
-            "gemini-1.5-pro",
-            "gemini-3.8-flash"
+            "gemini-2.0-flash-lite",
+            "gemini-1.5-pro"
         )
 
         @Volatile
-        var preferredModel: String = "gemini-2.0-flash"
+        var preferredModel: String = "gemini-3.8-flash"
 
         const val GEMINI_SYSTEM_INSTRUCTION_AR = """
 أنت Google Gemini (جيميني)، المساعد الذكي فائق التطور والسرعة.
@@ -82,9 +88,9 @@ Persona & Royal Demeanor:
     }
 
     private val okHttpClient = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(18, TimeUnit.SECONDS)
-        .writeTimeout(10, TimeUnit.SECONDS)
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(35, TimeUnit.SECONDS)
+        .writeTimeout(20, TimeUnit.SECONDS)
         .build()
 
     data class GeminiResult(
@@ -243,13 +249,36 @@ Persona & Royal Demeanor:
         requestJson.put("systemInstruction", systemInstructionObj)
 
         val contentsArray = JSONArray()
-        // Include up to last 8 turns of context
-        val recentHistory = history.takeLast(8)
-        for (msg in recentHistory) {
+        // Clean history: exclude errors and empty texts
+        val validHistory = history.filter { !it.isError && it.text.isNotBlank() }
+
+        // Build alternating conversation turns
+        val alternatingTurns = mutableListOf<Pair<String, String>>()
+        for (msg in validHistory.takeLast(10)) {
+            val role = if (msg.sender == MessageSender.USER) "user" else "model"
+            if (alternatingTurns.isNotEmpty() && alternatingTurns.last().first == role) {
+                val last = alternatingTurns.removeAt(alternatingTurns.lastIndex)
+                alternatingTurns.add(Pair(role, "${last.second}\n${msg.text}"))
+            } else {
+                alternatingTurns.add(Pair(role, msg.text))
+            }
+        }
+
+        // Ensure the sequence starts with user
+        while (alternatingTurns.isNotEmpty() && alternatingTurns.first().first != "user") {
+            alternatingTurns.removeAt(0)
+        }
+
+        // Ensure the sequence does NOT end with user, because currentTurn will be appended as user
+        while (alternatingTurns.isNotEmpty() && alternatingTurns.last().first == "user") {
+            alternatingTurns.removeAt(alternatingTurns.lastIndex)
+        }
+
+        for (turn in alternatingTurns) {
             val turnObj = JSONObject()
-            turnObj.put("role", if (msg.sender == MessageSender.USER) "user" else "model")
+            turnObj.put("role", turn.first)
             val parts = JSONArray()
-            parts.put(JSONObject().put("text", msg.text))
+            parts.put(JSONObject().put("text", turn.second))
             turnObj.put("parts", parts)
             contentsArray.put(turnObj)
         }
@@ -309,6 +338,95 @@ Persona & Royal Demeanor:
         return requestJson.toString()
     }
 
+    private suspend fun tryFirebaseAiStream(
+        prompt: String,
+        systemInstruction: String,
+        imageBitmap: Bitmap? = null,
+        ragContext: List<RagDocument> = emptyList(),
+        onChunk: suspend (String) -> Unit
+    ): String? {
+        return try {
+            val modelName = when (preferredModel) {
+                "gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.0-flash-lite", "gemini-1.5-pro" -> "gemini-3.8-flash"
+                else -> preferredModel.ifBlank { "gemini-3.8-flash" }
+            }
+            val generativeModel = Firebase.ai.generativeModel(
+                modelName = modelName,
+                systemInstruction = content { text(systemInstruction) }
+            )
+
+            val input = content("user") {
+                if (ragContext.isNotEmpty()) {
+                    val enabledDocs = ragContext.filter { it.isEnabled }
+                    if (enabledDocs.isNotEmpty()) {
+                        val ragText = enabledDocs.joinToString("\n\n") { "[وثيقة: ${it.title}]: ${it.content}" }
+                        text("سياق معرفي موثق:\n$ragText\n\nالسؤال: $prompt")
+                    } else {
+                        text(prompt)
+                    }
+                } else {
+                    text(prompt)
+                }
+                if (imageBitmap != null) {
+                    image(imageBitmap)
+                }
+            }
+
+            val accumulated = StringBuilder()
+            withTimeout(60_000L) {
+                generativeModel.generateContentStream(input).collect { chunk ->
+                    val chunkText = chunk.text.orEmpty()
+                    if (chunkText.isNotEmpty()) {
+                        accumulated.append(chunkText)
+                        onChunk(accumulated.toString())
+                    }
+                }
+            }
+
+            val resultText = accumulated.toString().trim()
+            if (resultText.isNotEmpty()) resultText else null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Firebase AI Logic stream attempt notice: ${e.message}")
+            null
+        }
+    }
+
+    private suspend fun tryFirebaseAiUnary(
+        prompt: String,
+        systemInstruction: String,
+        imageBitmap: Bitmap? = null
+    ): String? {
+        return try {
+            val modelName = when (preferredModel) {
+                "gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.0-flash-lite", "gemini-1.5-pro" -> "gemini-3.8-flash"
+                else -> preferredModel.ifBlank { "gemini-3.8-flash" }
+            }
+            val generativeModel = Firebase.ai.generativeModel(
+                modelName = modelName,
+                systemInstruction = content { text(systemInstruction) }
+            )
+
+            val input = content("user") {
+                text(prompt)
+                if (imageBitmap != null) {
+                    image(imageBitmap)
+                }
+            }
+
+            val response = withTimeout(60_000L) {
+                generativeModel.generateContent(input)
+            }
+            response.text?.trim()?.ifEmpty { null }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Firebase AI Logic unary generation attempt notice: ${e.message}")
+            null
+        }
+    }
+
     /**
      * High-speed streaming response for instant perceived performance.
      * Emits partial chunks through onChunk, drastically reducing Time-To-First-Token.
@@ -325,6 +443,27 @@ Persona & Royal Demeanor:
         gemPersona: String = "GEMINI_DEFAULT",
         onChunk: suspend (String) -> Unit
     ): GeminiResult = withContext(Dispatchers.IO) {
+        val systemInstruction = when (gemPersona) {
+            "GEMINI_DEFAULT" -> if (appLanguage == AppLanguage.ARABIC) GEMINI_SYSTEM_INSTRUCTION_AR else GEMINI_SYSTEM_INSTRUCTION_EN
+            else -> if (appLanguage == AppLanguage.ARABIC) RAMSES_SYSTEM_INSTRUCTION_AR else RAMSES_SYSTEM_INSTRUCTION_EN
+        }
+
+        // 1. First priority: Firebase AI Logic (Gemini 3.8 Flash, App Check protected, no API key required)
+        val firebaseAiStreamResult = tryFirebaseAiStream(
+            prompt = prompt,
+            systemInstruction = systemInstruction,
+            imageBitmap = imageBitmap,
+            ragContext = ragContext,
+            onChunk = onChunk
+        )
+        if (!firebaseAiStreamResult.isNullOrBlank()) {
+            return@withContext GeminiResult(
+                text = firebaseAiStreamResult,
+                groundingSources = emptyList(),
+                isError = false
+            )
+        }
+
         val apiKey = getEffectiveApiKey(customApiKey)
         if (apiKey.isBlank()) {
             return@withContext generateOfflineKnowledgeResponse(prompt, appLanguage, isVoiceCall, onChunk)
@@ -459,19 +598,61 @@ Persona & Royal Demeanor:
             return@withContext nonStreamingResult
         }
 
-        // Handle Quota/Rate Limit and network errors with seamless royal fallback
+        val errorText = buildFriendlyErrorMessage(lastErrorMessage, appLanguage)
+        onChunk(errorText)
+        return@withContext GeminiResult(text = errorText, isError = true)
+    }
+
+    private fun buildFriendlyErrorMessage(lastErrorMessage: String, appLanguage: AppLanguage): String {
         val isQuota = lastErrorMessage.contains("quota", ignoreCase = true) ||
                 lastErrorMessage.contains("429") ||
                 lastErrorMessage.contains("exhausted", ignoreCase = true) ||
                 lastErrorMessage.contains("rate limit", ignoreCase = true) ||
                 lastErrorMessage.contains("limit exceeded", ignoreCase = true)
 
-        if (isQuota || lastErrorMessage.isNotBlank()) {
-            Log.w(TAG, "Rate limit or connection constraint encountered ($lastErrorMessage), engaging royal wisdom engine.")
-            return@withContext generateOfflineKnowledgeResponse(prompt, appLanguage, isVoiceCall, onChunk)
-        }
+        val isKeyError = lastErrorMessage.contains("API_KEY_INVALID", ignoreCase = true) ||
+                lastErrorMessage.contains("key not valid", ignoreCase = true) ||
+                lastErrorMessage.contains("403") ||
+                lastErrorMessage.contains("unregistered", ignoreCase = true)
 
-        GeminiResult(text = "جاهز للإجابة يا صديقي", isError = false)
+        val isModelError = lastErrorMessage.contains("not found", ignoreCase = true) ||
+                lastErrorMessage.contains("not supported", ignoreCase = true) ||
+                lastErrorMessage.contains("404")
+
+        val isArabic = appLanguage == AppLanguage.ARABIC
+        return when {
+            isQuota -> {
+                if (isArabic) {
+                    "تم تجاوز الحد الأقصى للطلبات المسموح بها لـ Gemini (Quota Exceeded - 429).\n\nيُرجى الانتظار دقيقة أو إدخال مفتاحك الشخصي المجاني من القائمة الجانبية للمتابعة فوراً."
+                } else {
+                    "Gemini API rate limit or quota exceeded (HTTP 429).\n\nPlease wait a minute or provide a personal API key from Google AI Studio to continue."
+                }
+            }
+            isKeyError -> {
+                if (isArabic) {
+                    "مفتاح Google AI Studio الحالي غير صالح أو غير مفعّل.\n\nيُرجى التحقق من المفتاح في القائمة الجانبية (مفتاح API الشخصي)."
+                } else {
+                    "Invalid or unverified Google AI Studio API key.\n\nPlease check your key in the side menu (Personal API Key)."
+                }
+            }
+            isModelError -> {
+                if (isArabic) {
+                    "نموذج الذكاء الاصطناعي المحدد غير متاح حالياً. تم التحويل التلقائي لنموذج Gemini 2.0 Flash."
+                } else {
+                    "The selected AI model is currently unavailable. Switched to Gemini 2.0 Flash."
+                }
+            }
+            lastErrorMessage.isNotBlank() -> {
+                if (isArabic) {
+                    "تعذر الاتصال بـ Google Gemini ($lastErrorMessage).\n\nيُرجى التحقق من اتصال الإنترنت والمحاولة مجدداً."
+                } else {
+                    "Unable to connect to Google Gemini ($lastErrorMessage).\n\nPlease check your internet connection and try again."
+                }
+            }
+            else -> {
+                if (isArabic) "تعذر الحصول على استجابة من خوادم Gemini. يُرجى إعادة المحاولة." else "Unable to get a response from Gemini servers. Please try again."
+            }
+        }
     }
 
     /**
@@ -488,6 +669,25 @@ Persona & Royal Demeanor:
         appLanguage: AppLanguage = AppLanguage.ARABIC,
         gemPersona: String = "GEMINI_DEFAULT"
     ): GeminiResult = withContext(Dispatchers.IO) {
+        val systemInstruction = when (gemPersona) {
+            "GEMINI_DEFAULT" -> if (appLanguage == AppLanguage.ARABIC) GEMINI_SYSTEM_INSTRUCTION_AR else GEMINI_SYSTEM_INSTRUCTION_EN
+            else -> if (appLanguage == AppLanguage.ARABIC) RAMSES_SYSTEM_INSTRUCTION_AR else RAMSES_SYSTEM_INSTRUCTION_EN
+        }
+
+        // 1. Try Firebase AI Logic first
+        val firebaseAiUnaryResult = tryFirebaseAiUnary(
+            prompt = prompt,
+            systemInstruction = systemInstruction,
+            imageBitmap = imageBitmap
+        )
+        if (!firebaseAiUnaryResult.isNullOrBlank()) {
+            return@withContext GeminiResult(
+                text = firebaseAiUnaryResult,
+                groundingSources = emptyList(),
+                isError = false
+            )
+        }
+
         val apiKey = getEffectiveApiKey(customApiKey)
         if (apiKey.isBlank()) {
             return@withContext generateOfflineKnowledgeResponse(prompt, appLanguage, isVoiceCall) { /* no-op */ }
@@ -517,67 +717,68 @@ Persona & Royal Demeanor:
                     .post(requestBodyJson.toRequestBody(mediaType))
                     .build()
 
-                val httpResponse = okHttpClient.newCall(httpRequest).execute()
-                val responseBodyString = httpResponse.body?.string() ?: ""
+                okHttpClient.newCall(httpRequest).execute().use { httpResponse ->
+                    val responseBodyString = httpResponse.body?.string() ?: ""
 
-                if (!httpResponse.isSuccessful) {
-                    val errorMsg = try {
-                        JSONObject(responseBodyString).optJSONObject("error")?.optString("message") ?: "HTTP ${httpResponse.code}"
-                    } catch (e: Exception) {
-                        "HTTP ${httpResponse.code}"
+                    if (!httpResponse.isSuccessful) {
+                        val errorMsg = try {
+                            JSONObject(responseBodyString).optJSONObject("error")?.optString("message") ?: "HTTP ${httpResponse.code}"
+                        } catch (e: Exception) {
+                            "HTTP ${httpResponse.code}"
+                        }
+                        lastErrorMessage = errorMsg
+                        return@use
                     }
-                    lastErrorMessage = errorMsg
-                    continue
-                }
 
-                preferredModel = modelName
-                val responseJson = JSONObject(responseBodyString)
-                val candidates = responseJson.optJSONArray("candidates")
-                if (candidates == null || candidates.length() == 0) {
-                    val defaultAns = if (appLanguage == AppLanguage.ARABIC) "حكمة الفراعنة حاضرة دوماً، تفضل بسؤالك." else "The Pharaoh's wisdom is ever ready. Pray, ask your question."
-                    return@withContext GeminiResult(text = defaultAns, isError = false)
-                }
+                    preferredModel = modelName
+                    val responseJson = JSONObject(responseBodyString)
+                    val candidates = responseJson.optJSONArray("candidates")
+                    if (candidates == null || candidates.length() == 0) {
+                        val defaultAns = if (appLanguage == AppLanguage.ARABIC) "حكمة الفراعنة حاضرة دوماً، تفضل بسؤالك." else "The Pharaoh's wisdom is ever ready. Pray, ask your question."
+                        return@withContext GeminiResult(text = defaultAns, isError = false)
+                    }
 
-                val candidate = candidates.getJSONObject(0)
-                val content = candidate.optJSONObject("content")
-                val parts = content?.optJSONArray("parts")
+                    val candidate = candidates.getJSONObject(0)
+                    val content = candidate.optJSONObject("content")
+                    val parts = content?.optJSONArray("parts")
 
-                val responseStringBuilder = StringBuilder()
-                if (parts != null) {
-                    for (i in 0 until parts.length()) {
-                        val text = parts.getJSONObject(i).optString("text")
-                        if (text.isNotEmpty()) {
-                            responseStringBuilder.append(text)
+                    val responseStringBuilder = StringBuilder()
+                    if (parts != null) {
+                        for (i in 0 until parts.length()) {
+                            val text = parts.getJSONObject(i).optString("text")
+                            if (text.isNotEmpty()) {
+                                responseStringBuilder.append(text)
+                            }
                         }
                     }
-                }
 
-                val groundingSources = mutableListOf<GroundingSource>()
-                val groundingMetadata = candidate.optJSONObject("groundingMetadata")
-                if (groundingMetadata != null) {
-                    val groundingChunks = groundingMetadata.optJSONArray("groundingChunks")
-                    if (groundingChunks != null) {
-                        for (i in 0 until groundingChunks.length()) {
-                            val chunk = groundingChunks.getJSONObject(i)
-                            val web = chunk.optJSONObject("web")
-                            if (web != null) {
-                                val title = web.optString("title", "Google Search")
-                                val uri = web.optString("uri", "")
-                                if (uri.isNotEmpty()) {
-                                    groundingSources.add(GroundingSource(title = title, uri = uri))
+                    val groundingSources = mutableListOf<GroundingSource>()
+                    val groundingMetadata = candidate.optJSONObject("groundingMetadata")
+                    if (groundingMetadata != null) {
+                        val groundingChunks = groundingMetadata.optJSONArray("groundingChunks")
+                        if (groundingChunks != null) {
+                            for (i in 0 until groundingChunks.length()) {
+                                val chunk = groundingChunks.getJSONObject(i)
+                                val web = chunk.optJSONObject("web")
+                                if (web != null) {
+                                    val title = web.optString("title", "Google Search")
+                                    val uri = web.optString("uri", "")
+                                    if (uri.isNotEmpty()) {
+                                        groundingSources.add(GroundingSource(title = title, uri = uri))
+                                    }
                                 }
                             }
                         }
                     }
-                }
 
-                val finalAnswer = responseStringBuilder.toString().trim()
-                if (finalAnswer.isNotEmpty()) {
-                    return@withContext GeminiResult(
-                        text = finalAnswer,
-                        groundingSources = groundingSources.distinctBy { it.uri },
-                        isError = false
-                    )
+                    val finalAnswer = responseStringBuilder.toString().trim()
+                    if (finalAnswer.isNotEmpty()) {
+                        return@withContext GeminiResult(
+                            text = finalAnswer,
+                            groundingSources = groundingSources.distinctBy { it.uri },
+                            isError = false
+                        )
+                    }
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Request to $modelName failed: ${e.message}")
@@ -585,7 +786,7 @@ Persona & Royal Demeanor:
             }
         }
 
-        // Seamless fallback to royal knowledge base on connection or quota constraints
-        generateOfflineKnowledgeResponse(prompt, appLanguage, isVoiceCall) { /* no-op */ }
+        val errorText = buildFriendlyErrorMessage(lastErrorMessage, appLanguage)
+        return@withContext GeminiResult(text = errorText, isError = true)
     }
 }

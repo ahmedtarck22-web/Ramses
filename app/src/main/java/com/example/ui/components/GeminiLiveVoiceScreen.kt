@@ -31,13 +31,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
@@ -51,6 +51,7 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.ViewInAr
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Surface
@@ -181,26 +182,6 @@ fun GeminiLiveVoiceScreen(
 
     val isArabic = appLanguage == AppLanguage.ARABIC
 
-    val quickSuggestions = remember(appLanguage) {
-        if (isArabic) {
-            listOf(
-                "حدثني عن معبد أبو سمبل",
-                "أعطني حكمة ملكية لليوم",
-                "كيف أنظم وقتي وأهدافي؟",
-                "ما سر معركة قادش؟",
-                "حدثني عن أعظم إنجازاتك"
-            )
-        } else {
-            listOf(
-                "Tell me about Abu Simbel",
-                "Give me royal wisdom for today",
-                "How to master discipline and focus?",
-                "What is the story of Kadesh?",
-                "Share your greatest imperial legacy"
-            )
-        }
-    }
-
     Dialog(
         onDismissRequest = onEndCall,
         properties = DialogProperties(
@@ -286,13 +267,14 @@ fun GeminiLiveVoiceScreen(
                     }
                 }
 
-                // 2. Centerpiece: King Ramses 3D Model directly on royal navy background without bounding card
+                // 2. Centerpiece: King Ramses 3D Model shifted down gracefully
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(1f)
+                        .weight(1.05f)
+                        .padding(top = 10.dp)
                 ) {
                     Box(
                         modifier = Modifier
@@ -309,7 +291,8 @@ fun GeminiLiveVoiceScreen(
                             appLanguage = appLanguage,
                             onStopSpeaking = onStopSpeaking,
                             isAutoSpeakEnabled = true,
-                            showBackgroundGradient = false
+                            showBackgroundGradient = false,
+                            verticalOffset = -0.10f
                         )
                     }
 
@@ -322,110 +305,97 @@ fun GeminiLiveVoiceScreen(
                     )
                 }
 
-                // 3. Live Spoken Subtitle & Transcript (Only shown when speaking, thinking, or user speaks)
-                val statusText = when (voiceCallState) {
-                    VoiceCallState.THINKING -> if (isArabic) "رمسيس يستحضر الإجابة..." else "Rameses is reasoning..."
-                    VoiceCallState.SPEAKING -> if (isArabic) "رمسيس يتحدث..." else "Rameses is speaking..."
-                    else -> ""
-                }
+                Spacer(modifier = Modifier.height(10.dp))
 
-                val displayText = if (voiceCallState == VoiceCallState.SPEAKING && lastRamsesSpeech.isNotBlank()) {
-                    lastRamsesSpeech
-                } else if (lastTranscript.isNotBlank()) {
-                    "« $lastTranscript »"
-                } else {
-                    ""
-                }
+                // 3. Dedicated AI & Conversation Response Section directly below the avatar
+                val responseScrollState = rememberScrollState()
 
-                if (statusText.isNotBlank() || displayText.isNotBlank()) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 85.dp, max = 150.dp)
+                        .padding(horizontal = 4.dp),
+                    shape = RoundedCornerShape(20.dp),
+                    color = Color(0x660B172E),
+                    border = androidx.compose.foundation.BorderStroke(
+                        1.dp,
+                        if (voiceCallState == VoiceCallState.SPEAKING) RoyalGold.copy(alpha = 0.6f) else Color(0x33FFFFFF)
+                    )
+                ) {
+                    Box(
                         modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 8.dp)
+                            .fillMaxSize()
+                            .padding(horizontal = 16.dp, vertical = 12.dp)
+                            .verticalScroll(responseScrollState),
+                        contentAlignment = Alignment.Center
                     ) {
-                        if (statusText.isNotBlank()) {
-                            Text(
-                                text = statusText,
-                                fontFamily = AmiriFontFamily,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 14.sp,
-                                color = if (voiceCallState == VoiceCallState.SPEAKING) RoyalGoldLight else Color(0xFF818CF8),
-                                textAlign = TextAlign.Center
-                            )
-                            Spacer(modifier = Modifier.height(6.dp))
-                        }
-
-                        if (displayText.isNotBlank()) {
-                            Surface(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .heightIn(min = 55.dp, max = 95.dp),
-                                shape = RoundedCornerShape(20.dp),
-                                color = Color(0x330B172E),
-                                border = androidx.compose.foundation.BorderStroke(
-                                    1.dp,
-                                    if (voiceCallState == VoiceCallState.SPEAKING) RoyalGold.copy(alpha = 0.5f) else Color.White.copy(alpha = 0.10f)
+                        when {
+                            // AI is speaking or has responded
+                            lastRamsesSpeech.isNotBlank() && (voiceCallState == VoiceCallState.SPEAKING || voiceCallState == VoiceCallState.IDLE) -> {
+                                Text(
+                                    text = lastRamsesSpeech,
+                                    fontFamily = if (isArabic) AmiriFontFamily else CinzelFontFamily,
+                                    fontSize = 14.sp,
+                                    color = RoyalGoldLight,
+                                    textAlign = TextAlign.Center,
+                                    lineHeight = 22.sp
                                 )
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .padding(12.dp)
-                                        .clickable {
-                                            if (voiceCallState == VoiceCallState.SPEAKING) {
-                                                onStopSpeaking()
-                                                onStartListening()
-                                            }
-                                        },
-                                    contentAlignment = Alignment.Center
+                            }
+                            // User is speaking / speech transcribed
+                            lastTranscript.isNotBlank() -> {
+                                Text(
+                                    text = "« $lastTranscript »",
+                                    fontFamily = if (isArabic) AmiriFontFamily else CinzelFontFamily,
+                                    fontSize = 14.sp,
+                                    color = Color.White.copy(alpha = 0.9f),
+                                    textAlign = TextAlign.Center,
+                                    lineHeight = 21.sp
+                                )
+                            }
+                            // AI is thinking / reasoning
+                            voiceCallState == VoiceCallState.THINKING -> {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        color = EgyptianCyan,
+                                        strokeWidth = 2.dp
+                                    )
                                     Text(
-                                        text = displayText,
-                                        fontFamily = AmiriFontFamily,
-                                        fontSize = 14.sp,
-                                        color = if (voiceCallState == VoiceCallState.SPEAKING) RoyalGoldLight else Color.White,
-                                        textAlign = TextAlign.Center,
-                                        lineHeight = 20.sp
+                                        text = if (isArabic) "رمسيس يستحضر الإجابة..." else "Rameses is reasoning...",
+                                        fontFamily = if (isArabic) AmiriFontFamily else CinzelFontFamily,
+                                        fontSize = 13.sp,
+                                        color = EgyptianCyan
                                     )
                                 }
                             }
-                        }
-                    }
-                }
-
-                // 4. Quick Suggestions Chips (One-Tap Prompts)
-                LazyRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(quickSuggestions) { suggestion ->
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(16.dp))
-                                .background(Color(0x2E1E293B))
-                                .border(0.8.dp, RoyalGold.copy(alpha = 0.35f), RoundedCornerShape(16.dp))
-                                .clickable { onQuickPromptClick(suggestion) }
-                                .padding(horizontal = 12.dp, vertical = 7.dp)
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    imageVector = Icons.Default.AutoAwesome,
-                                    contentDescription = null,
-                                    tint = RoyalGold,
-                                    modifier = Modifier.size(12.dp)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
+                            // Listening state
+                            voiceCallState == VoiceCallState.LISTENING -> {
                                 Text(
-                                    text = suggestion,
-                                    fontFamily = AmiriFontFamily,
-                                    fontSize = 12.sp,
-                                    color = Color.White
+                                    text = if (isArabic) "« تحدّث الآن وسيجيبك رمسيس... »" else "« Speak now and Rameses will reply... »",
+                                    fontFamily = if (isArabic) AmiriFontFamily else CinzelFontFamily,
+                                    fontSize = 13.sp,
+                                    color = Color(0xFF00E5FF).copy(alpha = 0.85f),
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                            // Idle default state
+                            else -> {
+                                Text(
+                                    text = if (isArabic) "اضغط على زر الميكروفون لبدء الحديث" else "Tap the microphone to speak",
+                                    fontFamily = if (isArabic) AmiriFontFamily else CinzelFontFamily,
+                                    fontSize = 13.sp,
+                                    color = Color.White.copy(alpha = 0.45f),
+                                    textAlign = TextAlign.Center
                                 )
                             }
                         }
                     }
                 }
+
+                Spacer(modifier = Modifier.height(8.dp))
 
                 // 5. Expandable In-Call Text Input Bar (if user chooses keyboard)
                 AnimatedVisibility(

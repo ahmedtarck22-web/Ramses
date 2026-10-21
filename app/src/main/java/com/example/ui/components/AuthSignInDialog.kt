@@ -53,6 +53,7 @@ import com.example.data.model.UserProfile
 import com.example.ui.theme.AmiriFontFamily
 import com.example.ui.theme.CinzelFontFamily
 import com.example.ui.theme.EgyptianCyan
+import com.example.ui.theme.PharaonicMidnight
 import com.example.ui.theme.RoyalGold
 import com.example.ui.theme.RoyalGoldLight
 import com.example.ui.theme.SurfaceCard
@@ -134,7 +135,8 @@ fun AuthSignInDialog(
     onSignInWithGoogle: (email: String, name: String) -> Unit,
     onSignInWithApple: (email: String, name: String) -> Unit,
     onSignOut: () -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onGoogleSignInClick: () -> Unit = {}
 ) {
     val context = LocalContext.current
 
@@ -301,23 +303,40 @@ fun AuthSignInDialog(
                     // Sign-in Options
                     Column(
                         modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
-                        // 1. Sign in with Google Button
-                        Button(
-                            onClick = {
-                                onSignInWithGoogle("ahmedtarck13@gmail.com", "أحمد طارق")
-                                Toast.makeText(context, "تم تسجيل الدخول بنجاح بحساب Google", Toast.LENGTH_SHORT).show()
-                                onDismiss()
-                            },
+                        // Notice about Cloud Sync
+                        Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(50.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(Color(0x26102A43))
+                                .border(1.dp, EgyptianCyan.copy(alpha = 0.4f), RoundedCornerShape(12.dp))
+                                .padding(10.dp)
+                        ) {
+                            Text(
+                                text = "المصادقة السحابية عبر Firebase مهيأة ومحمية بقواعد أمان صارمة لحفظ وتزامن محادثاتك وسجلّك الملكي.",
+                                fontFamily = AmiriFontFamily,
+                                fontSize = 12.sp,
+                                color = TextPrimary,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+
+                        // 1. Google Sign-In via Credential Manager
+                        Button(
+                            onClick = {
+                                onGoogleSignInClick()
+                            },
+                            enabled = true,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp)
                                 .testTag("google_signin_button"),
                             shape = RoundedCornerShape(14.dp),
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = Color.White,
-                                contentColor = Color(0xFF1F2937)
+                                contentColor = Color(0xFF1F1F1F)
                             )
                         ) {
                             Row(
@@ -325,59 +344,67 @@ fun AuthSignInDialog(
                                 horizontalArrangement = Arrangement.Center
                             ) {
                                 GoogleLogo(modifier = Modifier.size(20.dp))
-                                Spacer(modifier = Modifier.width(12.dp))
+                                Spacer(modifier = Modifier.width(10.dp))
                                 Text(
-                                    text = "تسجيل الدخول بحساب Google",
+                                    text = "تسجيل الدخول عبر Google",
                                     fontFamily = AmiriFontFamily,
                                     fontWeight = FontWeight.Bold,
-                                    fontSize = 15.sp
+                                    fontSize = 14.sp,
+                                    color = Color(0xFF1F1F1F)
                                 )
                             }
                         }
 
-                        // 2. Sign in with Apple Button
+                        // 2. Apple Sign-In (Clearly Disabled until real OAuth backend is configured)
                         Button(
                             onClick = {
-                                onSignInWithApple("user.apple@icloud.com", "مستخدم Apple")
-                                Toast.makeText(context, "تم تسجيل الدخول بنجاح بحساب Apple", Toast.LENGTH_SHORT).show()
-                                onDismiss()
+                                Toast.makeText(context, "تسجيل الدخول عبر Apple غير متاح على هذه المنصة", Toast.LENGTH_LONG).show()
                             },
+                            enabled = false,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(50.dp)
+                                .height(48.dp)
                                 .testTag("apple_signin_button"),
                             shape = RoundedCornerShape(14.dp),
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = Color(0xFF1F2937),
-                                contentColor = Color.White
-                            ),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = 0.2f))
+                                disabledContainerColor = Color(0xFF1E2125),
+                                disabledContentColor = Color.White.copy(alpha = 0.4f)
+                            )
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.Center
                             ) {
-                                AppleLogo(modifier = Modifier.size(20.dp))
-                                Spacer(modifier = Modifier.width(12.dp))
+                                AppleLogo(modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(10.dp))
                                 Text(
-                                    text = "تسجيل الدخول بحساب Apple",
+                                    text = "Apple Sign-In (غير مهيأ)",
                                     fontFamily = AmiriFontFamily,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 15.sp
+                                    fontSize = 13.sp
                                 )
                             }
                         }
 
-                        // Continue as Guest button
-                        TextButton(
+                        Spacer(modifier = Modifier.height(4.dp))
+
+                        // Primary Action: Continue as Royal Guest with local storage
+                        Button(
                             onClick = onDismiss,
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(46.dp)
+                                .testTag("guest_mode_button"),
+                            shape = RoundedCornerShape(14.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = RoyalGold,
+                                contentColor = PharaonicMidnight
+                            )
                         ) {
                             Text(
-                                text = "المتابعة كزائر بدون حساب",
+                                text = "المتابعة كزائر ملكي (حفظ محلي آمن)",
                                 fontFamily = AmiriFontFamily,
-                                color = TextSecondary,
-                                fontSize = 13.sp
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp
                             )
                         }
                     }

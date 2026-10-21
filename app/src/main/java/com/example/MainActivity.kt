@@ -102,6 +102,7 @@ import com.example.ui.theme.RoyalGoldLight
 import com.example.ui.theme.SurfaceGlass
 import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
+import com.example.firebase.configureAppCheck
 import com.example.ui.viewmodel.RamsesViewModel
 import kotlinx.coroutines.launch
 
@@ -111,6 +112,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        configureAppCheck(this, intent)
         enableEdgeToEdge()
 
         setContent {
@@ -174,7 +176,7 @@ fun RamsesApp(viewModel: RamsesViewModel) {
         if (isGranted) {
             viewModel.startGeminiLiveCall()
         } else {
-            Toast.makeText(context, "Audio permission required for Gemini Live call", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, if (appLanguage == AppLanguage.ARABIC) "إذن الميكروفون مطلوب للتفاعل الصوتي" else "Microphone permission required for voice interaction", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -792,7 +794,24 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                         viewModel.signInWithApple(email, name)
                     },
                     onSignOut = { viewModel.signOut() },
-                    onDismiss = { showAuthDialog = false }
+                    onDismiss = { showAuthDialog = false },
+                    onGoogleSignInClick = {
+                        val act = context as? android.app.Activity
+                        if (act != null) {
+                            viewModel.launchGoogleSignIn(act) { success, errorMsg ->
+                                if (success) {
+                                    showAuthDialog = false
+                                    Toast.makeText(
+                                        context,
+                                        if (appLanguage == AppLanguage.ARABIC) "تم تسجيل الدخول بنجاح عبر Google" else "Successfully signed in with Google",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                } else if (errorMsg != null) {
+                                    Toast.makeText(context, errorMsg, Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        }
+                    }
                 )
             }
 

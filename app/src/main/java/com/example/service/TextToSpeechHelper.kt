@@ -42,6 +42,7 @@ class TextToSpeechHelper(context: Context) {
                     }
 
                     override fun onDone(utteranceId: String?) {
+                        mainHandler.removeCallbacksAndMessages(null)
                         _isSpeaking.value = false
                         mainHandler.post {
                             val cb = currentDoneCallback
@@ -52,6 +53,7 @@ class TextToSpeechHelper(context: Context) {
 
                     @Deprecated("Deprecated in Java")
                     override fun onError(utteranceId: String?) {
+                        mainHandler.removeCallbacksAndMessages(null)
                         _isSpeaking.value = false
                         mainHandler.post {
                             val cb = currentDoneCallback
@@ -61,6 +63,7 @@ class TextToSpeechHelper(context: Context) {
                     }
 
                     override fun onError(utteranceId: String?, errorCode: Int) {
+                        mainHandler.removeCallbacksAndMessages(null)
                         _isSpeaking.value = false
                         Log.w("TTS", "TTS error code: $errorCode")
                         mainHandler.post {
@@ -147,12 +150,14 @@ class TextToSpeechHelper(context: Context) {
     }
 
     fun stop() {
+        mainHandler.removeCallbacksAndMessages(null)
         tts?.stop()
         _isSpeaking.value = false
         currentDoneCallback = null
     }
 
     fun shutdown() {
+        mainHandler.removeCallbacksAndMessages(null)
         tts?.stop()
         tts?.shutdown()
         tts = null

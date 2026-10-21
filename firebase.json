@@ -1,0 +1,8 @@
+{
+  "firestore": [
+    {
+      "database": "ai-studio-android-ramsesai-ec0bc818-1b76-46de-ab39-1b92504efaed",
+      "rules": "firestore.rules"
+    }
+  ]
+}

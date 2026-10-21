@@ -122,8 +122,8 @@ object AppStrings {
     }
 
     fun drawerVoiceCall(lang: AppLanguage): String = when (lang) {
-        AppLanguage.ARABIC -> "مكالمة صوتية حية (Gemini Live)"
-        AppLanguage.ENGLISH -> "Live Voice Call (Gemini Live)"
+        AppLanguage.ARABIC -> "مكالمة رمسيس الصوتية التفاعلية"
+        AppLanguage.ENGLISH -> "Interactive Voice Call (Ramses Voice)"
     }
 
     fun clearAllChats(lang: AppLanguage): String = when (lang) {

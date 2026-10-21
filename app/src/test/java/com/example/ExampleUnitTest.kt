@@ -10,7 +10,12 @@ class ExampleUnitTest {
     @Test
     fun testRamsesModelConfiguration() {
         val models = com.example.data.api.GeminiApiClient.CANDIDATE_MODELS
-        assertTrue(models.contains("gemini-3.8-flash"))
+        assertTrue(models.contains("gemini-2.0-flash"))
+        assertTrue(models.contains("gemini-1.5-flash"))
+        assertTrue(models.contains("gemini-2.0-flash-lite"))
+        assertTrue(models.contains("gemini-1.5-pro"))
+        // Verify no unsupported or retired models
+        org.junit.Assert.assertFalse(models.contains("gemini-2.5-flash"))
     }
 
     @Test
@@ -41,5 +46,35 @@ class ExampleUnitTest {
             assertTrue(artifact.titleAr.isNotBlank())
             assertTrue(artifact.titleEn.isNotBlank())
         }
+    }
+
+    @Test
+    fun testVoiceCallTerminologySeparation() {
+        val voiceCallTitleAr = AppStrings.drawerVoiceCall(AppLanguage.ARABIC)
+        val voiceCallTitleEn = AppStrings.drawerVoiceCall(AppLanguage.ENGLISH)
+        // Verify not labeled as Google Gemini Live API
+        org.junit.Assert.assertFalse(voiceCallTitleAr.contains("Gemini Live"))
+        org.junit.Assert.assertFalse(voiceCallTitleEn.contains("Gemini Live"))
+    }
+
+    @Test
+    fun testChatMessageOrderAndTimestamp() {
+        val t1 = System.currentTimeMillis()
+        val t2 = t1 + 100
+        val m1 = com.example.data.model.ChatMessageEntity(
+            sessionId = "session_test",
+            sender = "USER",
+            text = "Hello Ramses",
+            timestamp = t1
+        )
+        val m2 = com.example.data.model.ChatMessageEntity(
+            sessionId = "session_test",
+            sender = "RAMSES",
+            text = "Greetings mortal",
+            timestamp = t2
+        )
+        assertTrue(m1.timestamp < m2.timestamp)
+        assertEquals("USER", m1.sender)
+        assertEquals("RAMSES", m2.sender)
     }
 }

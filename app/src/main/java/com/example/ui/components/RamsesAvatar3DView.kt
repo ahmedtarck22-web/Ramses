@@ -96,7 +96,8 @@ fun RamsesAvatar3DView(
     onStopSpeaking: () -> Unit = {},
     onToggleAutoSpeak: () -> Unit = {},
     isAutoSpeakEnabled: Boolean = true,
-    showBackgroundGradient: Boolean = true
+    showBackgroundGradient: Boolean = true,
+    verticalOffset: Float = 0f
 ) {
     val engine = rememberEngine()
     val modelLoader = rememberModelLoader(engine = engine)
@@ -167,9 +168,9 @@ fun RamsesAvatar3DView(
                     // Center the model's bounding box at (0, 0, 0) so the whole body is centered in viewport
                     node.centerOrigin(Position(0f, 0f, 0f))
 
-                    // Initial front-facing posture (rotated 180 degrees to 270f)
+                    // Initial front-facing posture
                     node.rotation = Rotation(x = 0f, y = baseRotationY, z = 0f)
-                    node.position = Position(x = 0f, y = -0.02f, z = 0f)
+                    node.position = Position(x = 0f, y = -0.02f + verticalOffset, z = 0f)
                     node.scale = Scale(baseScale, baseScale, baseScale)
 
                     // Initialize morph targets to 0
@@ -241,7 +242,7 @@ fun RamsesAvatar3DView(
             val totalY = (baseRotationY + idleSwayY) % 360f
 
             node.rotation = Rotation(x = speechForwardTilt, y = totalY, z = 0f)
-            node.position = Position(x = 0f, y = idleElevationY, z = 0f)
+            node.position = Position(x = 0f, y = idleElevationY + verticalOffset, z = 0f)
             node.scale = Scale(baseScale, baseScale, baseScale)
         }
     }
@@ -312,76 +313,6 @@ fun RamsesAvatar3DView(
                     ),
                     radius = 32f + (baseAperture * 18f),
                     center = mouthCenter
-                )
-            }
-        }
-
-        // 3. Royal Status Badge at top of avatar viewport
-        // 3. Royal Status Badge at top of avatar viewport (Only active during speech or reasoning per user request)
-        if (isSpeaking) {
-            Row(
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = 10.dp)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(Color(0xD9060B14))
-                    .border(1.dp, RoyalGold.copy(alpha = 0.5f), RoundedCornerShape(16.dp))
-                    .padding(horizontal = 12.dp, vertical = 5.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.GraphicEq,
-                    contentDescription = null,
-                    tint = RoyalGoldLight,
-                    modifier = Modifier.size(16.dp)
-                )
-                Text(
-                    text = if (appLanguage == AppLanguage.ARABIC) "الملك رمسيس يتحدث إليك..." else "King Rameses is speaking...",
-                    fontFamily = if (appLanguage == AppLanguage.ARABIC) AmiriFontFamily else CinzelFontFamily,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = RoyalGoldLight
-                )
-                Spacer(modifier = Modifier.width(4.dp))
-                // Stop speech action
-                Box(
-                    modifier = Modifier
-                        .clip(CircleShape)
-                        .background(Color(0x33FFFFFF))
-                        .clickable { onStopSpeaking() }
-                        .padding(4.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.VolumeOff,
-                        contentDescription = "كتم الصوت",
-                        tint = Color.White.copy(alpha = 0.85f),
-                        modifier = Modifier.size(13.dp)
-                    )
-                }
-            }
-        } else if (isThinking) {
-            Row(
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = 10.dp)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(Color(0xD9060B14))
-                    .border(1.dp, EgyptianCyan.copy(alpha = 0.5f), RoundedCornerShape(16.dp))
-                    .padding(horizontal = 12.dp, vertical = 5.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(14.dp),
-                    color = EgyptianCyan,
-                    strokeWidth = 2.dp
-                )
-                Text(
-                    text = if (appLanguage == AppLanguage.ARABIC) "رمسيس يستحضر الحكمة..." else "Rameses is reasoning...",
-                    fontFamily = if (appLanguage == AppLanguage.ARABIC) AmiriFontFamily else CinzelFontFamily,
-                    fontSize = 12.sp,
-                    color = EgyptianCyan
                 )
             }
         }

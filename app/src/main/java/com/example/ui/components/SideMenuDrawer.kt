@@ -445,7 +445,7 @@ fun SideMenuDrawer(
             // 4. Gemini Quick Settings & Features
             DrawerMenuItem(
                 icon = Icons.Default.Phone,
-                title = if (appLanguage == AppLanguage.ARABIC) "مكالمة Gemini Live" else "Gemini Live Voice",
+                title = if (appLanguage == AppLanguage.ARABIC) "مكالمة رمسيس الصوتية" else "Ramses Voice Call",
                 subtitle = if (appLanguage == AppLanguage.ARABIC) "تحدث بصوتك مباشرة بدون كتابة" else "Direct spoken dialogue in real time",
                 onClick = {
                     onCloseDrawer()

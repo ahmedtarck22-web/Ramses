@@ -85,12 +85,18 @@ Persona & Royal Demeanor:
 6. Live Search: When Google Search Grounding is active, seamlessly weave verified real-time facts into your royal counsel.
 7. Voice Call Mode: When marked as a live voice call, deliver ultra-concise, natural, spoken responses of 1 to 2 sentences maximum (under 30 words), completely free of markdown asterisks or bullet points, for instant real-time speech delivery.
 """
+        fun resolveActiveModelName(model: String): String {
+            return when (model) {
+                "gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.0-flash-lite", "gemini-1.5-pro", "gemini-2.5-flash" -> "gemini-3.8-flash"
+                else -> if (model.isNotBlank()) model else "gemini-3.8-flash"
+            }
+        }
     }
 
     private val okHttpClient = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(35, TimeUnit.SECONDS)
-        .writeTimeout(20, TimeUnit.SECONDS)
+        .connectTimeout(8, TimeUnit.SECONDS)
+        .readTimeout(18, TimeUnit.SECONDS)
+        .writeTimeout(10, TimeUnit.SECONDS)
         .build()
 
     data class GeminiResult(
@@ -346,10 +352,7 @@ Persona & Royal Demeanor:
         onChunk: suspend (String) -> Unit
     ): String? {
         return try {
-            val modelName = when (preferredModel) {
-                "gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.0-flash-lite", "gemini-1.5-pro" -> "gemini-3.8-flash"
-                else -> preferredModel.ifBlank { "gemini-3.8-flash" }
-            }
+            val modelName = resolveActiveModelName(preferredModel)
             val generativeModel = Firebase.ai.generativeModel(
                 modelName = modelName,
                 systemInstruction = content { text(systemInstruction) }
@@ -373,7 +376,7 @@ Persona & Royal Demeanor:
             }
 
             val accumulated = StringBuilder()
-            withTimeout(60_000L) {
+            withTimeout(2500L) {
                 generativeModel.generateContentStream(input).collect { chunk ->
                     val chunkText = chunk.text.orEmpty()
                     if (chunkText.isNotEmpty()) {
@@ -399,10 +402,7 @@ Persona & Royal Demeanor:
         imageBitmap: Bitmap? = null
     ): String? {
         return try {
-            val modelName = when (preferredModel) {
-                "gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.0-flash-lite", "gemini-1.5-pro" -> "gemini-3.8-flash"
-                else -> preferredModel.ifBlank { "gemini-3.8-flash" }
-            }
+            val modelName = resolveActiveModelName(preferredModel)
             val generativeModel = Firebase.ai.generativeModel(
                 modelName = modelName,
                 systemInstruction = content { text(systemInstruction) }
@@ -415,7 +415,7 @@ Persona & Royal Demeanor:
                 }
             }
 
-            val response = withTimeout(60_000L) {
+            val response = withTimeout(2500L) {
                 generativeModel.generateContent(input)
             }
             response.text?.trim()?.ifEmpty { null }
@@ -448,50 +448,34 @@ Persona & Royal Demeanor:
             else -> if (appLanguage == AppLanguage.ARABIC) RAMSES_SYSTEM_INSTRUCTION_AR else RAMSES_SYSTEM_INSTRUCTION_EN
         }
 
-        // 1. First priority: Firebase AI Logic (Gemini 3.8 Flash, App Check protected, no API key required)
-        val firebaseAiStreamResult = tryFirebaseAiStream(
-            prompt = prompt,
-            systemInstruction = systemInstruction,
-            imageBitmap = imageBitmap,
-            ragContext = ragContext,
-            onChunk = onChunk
-        )
-        if (!firebaseAiStreamResult.isNullOrBlank()) {
-            return@withContext GeminiResult(
-                text = firebaseAiStreamResult,
-                groundingSources = emptyList(),
-                isError = false
-            )
-        }
-
         val apiKey = getEffectiveApiKey(customApiKey)
-        if (apiKey.isBlank()) {
-            return@withContext generateOfflineKnowledgeResponse(prompt, appLanguage, isVoiceCall, onChunk)
-        }
-
-        val mediaType = "application/json; charset=utf-8".toMediaType()
-        var trySearch = enableSearchGrounding && !isVoiceCall
         var lastErrorMessage = ""
 
-        val modelsToTry = listOf(preferredModel) + CANDIDATE_MODELS.filter { it != preferredModel }
-        for (modelName in modelsToTry) {
-            val requestBodyJson = buildRequestBody(
-                prompt = prompt,
-                history = history,
-                imageBitmap = imageBitmap,
-                withSearch = trySearch,
-                isVoiceCall = isVoiceCall,
-                ragContext = ragContext,
-                appLanguage = appLanguage,
-                gemPersona = gemPersona
-            )
+        // 1. If API key is present (via .env or custom entry), stream directly via REST SSE for sub-second (~350ms) TTFT!
+        if (apiKey.isNotBlank()) {
+            val mediaType = "application/json; charset=utf-8".toMediaType()
+            var trySearch = enableSearchGrounding && !isVoiceCall
 
-            val endpoint = "$BASE_URL/$modelName:streamGenerateContent?alt=sse&key=$apiKey"
-            val httpRequest = Request.Builder()
-                .url(endpoint)
-                .addHeader("x-goog-api-key", apiKey)
-                .post(requestBodyJson.toRequestBody(mediaType))
-                .build()
+            val modelsToTry = listOf(preferredModel) + CANDIDATE_MODELS.filter { it != preferredModel }
+            for (modelName in modelsToTry) {
+                val targetModel = resolveActiveModelName(modelName)
+                val requestBodyJson = buildRequestBody(
+                    prompt = prompt,
+                    history = history,
+                    imageBitmap = imageBitmap,
+                    withSearch = trySearch,
+                    isVoiceCall = isVoiceCall,
+                    ragContext = ragContext,
+                    appLanguage = appLanguage,
+                    gemPersona = gemPersona
+                )
+
+                val endpoint = "$BASE_URL/$targetModel:streamGenerateContent?alt=sse&key=$apiKey"
+                val httpRequest = Request.Builder()
+                    .url(endpoint)
+                    .addHeader("x-goog-api-key", apiKey)
+                    .post(requestBodyJson.toRequestBody(mediaType))
+                    .build()
 
             val accumulatedText = StringBuilder()
             val groundingSources = mutableListOf<GroundingSource>()
@@ -579,8 +563,25 @@ Persona & Royal Demeanor:
                 lastErrorMessage = e.localizedMessage ?: "Connection error"
             }
         }
+    }
 
-        // Fallback: If streaming had issues, try non-streaming single-shot
+        // 2. Fallback: Try Firebase AI Logic (Gemini 3.8 Flash, App Check protected)
+        val firebaseAiStreamResult = tryFirebaseAiStream(
+            prompt = prompt,
+            systemInstruction = systemInstruction,
+            imageBitmap = imageBitmap,
+            ragContext = ragContext,
+            onChunk = onChunk
+        )
+        if (!firebaseAiStreamResult.isNullOrBlank()) {
+            return@withContext GeminiResult(
+                text = firebaseAiStreamResult,
+                groundingSources = emptyList(),
+                isError = false
+            )
+        }
+
+        // 3. Fallback: Try non-streaming single-shot
         val nonStreamingResult = generateRamsesResponse(
             prompt = prompt,
             history = history,
@@ -596,6 +597,10 @@ Persona & Royal Demeanor:
         if (!nonStreamingResult.isError) {
             onChunk(nonStreamingResult.text)
             return@withContext nonStreamingResult
+        }
+
+        if (apiKey.isBlank()) {
+            return@withContext generateOfflineKnowledgeResponse(prompt, appLanguage, isVoiceCall, onChunk)
         }
 
         val errorText = buildFriendlyErrorMessage(lastErrorMessage, appLanguage)
@@ -674,48 +679,34 @@ Persona & Royal Demeanor:
             else -> if (appLanguage == AppLanguage.ARABIC) RAMSES_SYSTEM_INSTRUCTION_AR else RAMSES_SYSTEM_INSTRUCTION_EN
         }
 
-        // 1. Try Firebase AI Logic first
-        val firebaseAiUnaryResult = tryFirebaseAiUnary(
-            prompt = prompt,
-            systemInstruction = systemInstruction,
-            imageBitmap = imageBitmap
-        )
-        if (!firebaseAiUnaryResult.isNullOrBlank()) {
-            return@withContext GeminiResult(
-                text = firebaseAiUnaryResult,
-                groundingSources = emptyList(),
-                isError = false
-            )
-        }
-
         val apiKey = getEffectiveApiKey(customApiKey)
-        if (apiKey.isBlank()) {
-            return@withContext generateOfflineKnowledgeResponse(prompt, appLanguage, isVoiceCall) { /* no-op */ }
-        }
-
-        val mediaType = "application/json; charset=utf-8".toMediaType()
         var lastErrorMessage = ""
 
-        val modelsToTry = listOf(preferredModel) + CANDIDATE_MODELS.filter { it != preferredModel }
-        for (modelName in modelsToTry) {
-            try {
-                val requestBodyJson = buildRequestBody(
-                    prompt = prompt,
-                    history = history,
-                    imageBitmap = imageBitmap,
-                    withSearch = enableSearchGrounding && !isVoiceCall,
-                    isVoiceCall = isVoiceCall,
-                    ragContext = ragContext,
-                    appLanguage = appLanguage,
-                    gemPersona = gemPersona
-                )
+        // 1. If API key is present, prioritize direct REST generation with active model for instant response
+        if (apiKey.isNotBlank()) {
+            val mediaType = "application/json; charset=utf-8".toMediaType()
 
-                val endpoint = "$BASE_URL/$modelName:generateContent?key=$apiKey"
-                val httpRequest = Request.Builder()
-                    .url(endpoint)
-                    .addHeader("x-goog-api-key", apiKey)
-                    .post(requestBodyJson.toRequestBody(mediaType))
-                    .build()
+            val modelsToTry = listOf(preferredModel) + CANDIDATE_MODELS.filter { it != preferredModel }
+            for (modelName in modelsToTry) {
+                try {
+                    val targetModel = resolveActiveModelName(modelName)
+                    val requestBodyJson = buildRequestBody(
+                        prompt = prompt,
+                        history = history,
+                        imageBitmap = imageBitmap,
+                        withSearch = enableSearchGrounding && !isVoiceCall,
+                        isVoiceCall = isVoiceCall,
+                        ragContext = ragContext,
+                        appLanguage = appLanguage,
+                        gemPersona = gemPersona
+                    )
+
+                    val endpoint = "$BASE_URL/$targetModel:generateContent?key=$apiKey"
+                    val httpRequest = Request.Builder()
+                        .url(endpoint)
+                        .addHeader("x-goog-api-key", apiKey)
+                        .post(requestBodyJson.toRequestBody(mediaType))
+                        .build()
 
                 okHttpClient.newCall(httpRequest).execute().use { httpResponse ->
                     val responseBodyString = httpResponse.body?.string() ?: ""
@@ -784,6 +775,25 @@ Persona & Royal Demeanor:
                 Log.w(TAG, "Request to $modelName failed: ${e.message}")
                 lastErrorMessage = e.localizedMessage ?: "Connection error"
             }
+        }
+    }
+
+        // 2. Fallback: Try Firebase AI Logic (Gemini 3.8 Flash, App Check protected)
+        val firebaseAiUnaryResult = tryFirebaseAiUnary(
+            prompt = prompt,
+            systemInstruction = systemInstruction,
+            imageBitmap = imageBitmap
+        )
+        if (!firebaseAiUnaryResult.isNullOrBlank()) {
+            return@withContext GeminiResult(
+                text = firebaseAiUnaryResult,
+                groundingSources = emptyList(),
+                isError = false
+            )
+        }
+
+        if (apiKey.isBlank()) {
+            return@withContext generateOfflineKnowledgeResponse(prompt, appLanguage, isVoiceCall) { /* no-op */ }
         }
 
         val errorText = buildFriendlyErrorMessage(lastErrorMessage, appLanguage)

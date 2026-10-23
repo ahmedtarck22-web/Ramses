@@ -126,9 +126,9 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
     )
     val userProfile: StateFlow<UserProfile> = _userProfile.asStateFlow()
 
-    // Selected Gemini Model (gemini-2.0-flash / gemini-1.5-pro)
+    // Selected Gemini Model
     private val _selectedModel = MutableStateFlow(
-        prefs.getString("selected_gemini_model", "gemini-2.0-flash") ?: "gemini-2.0-flash"
+        prefs.getString("selected_gemini_model", "gemini-3.8-flash") ?: "gemini-3.8-flash"
     )
     val selectedModel: StateFlow<String> = _selectedModel.asStateFlow()
 
@@ -203,11 +203,13 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
                 _isVoiceTyping.value = false
             }
             if (_isGeminiLiveActive.value) {
-                // Safely recover state to LISTENING without hammering recognizer in an infinite error loop
+                // Safely recover state to LISTENING and re-arm recognizer
                 viewModelScope.launch {
-                    delay(300)
+                    delay(350)
                     if (_isGeminiLiveActive.value && _voiceCallState.value != VoiceCallState.SPEAKING) {
                         _voiceCallState.value = VoiceCallState.LISTENING
+                        val langTag = if (_appLanguage.value == AppLanguage.ENGLISH) "en-US" else "ar-EG"
+                        speechHelper.startListening(langTag)
                     }
                 }
             }
@@ -503,6 +505,17 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
                 if (isVoice) {
                     _voiceCallState.value = VoiceCallState.SPEAKING
                     val langTag = if (_appLanguage.value == AppLanguage.ENGLISH) "en-US" else "ar-EG"
+
+                    // Safety watchdog: ensure return to LISTENING if TTS is muted or silent
+                    val safetyTimeoutMs = minOf(12_000L, maxOf(2500L, (finalText.length * 80L)))
+                    viewModelScope.launch {
+                        delay(safetyTimeoutMs)
+                        if (_isGeminiLiveActive.value && _voiceCallState.value == VoiceCallState.SPEAKING) {
+                            _voiceCallState.value = VoiceCallState.LISTENING
+                            speechHelper.startListening(langTag)
+                        }
+                    }
+
                     ttsHelper.speak(finalText, languageCode = langTag) {
                         if (_isGeminiLiveActive.value) {
                             _voiceCallState.value = VoiceCallState.LISTENING
@@ -595,6 +608,15 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
             "مرحباً بك، أنا أستمع إليك."
         }
         val langTag = if (isEnglish) "en-US" else "ar-EG"
+
+        // Safety watchdog: transition to LISTENING after greeting even if TTS is muted
+        viewModelScope.launch {
+            delay(2200)
+            if (_isGeminiLiveActive.value && _voiceCallState.value == VoiceCallState.SPEAKING) {
+                _voiceCallState.value = VoiceCallState.LISTENING
+                speechHelper.startListening(langTag)
+            }
+        }
 
         // Speak ultra-short royal greeting then start listening immediately
         ttsHelper.speak(greeting, languageCode = langTag) {

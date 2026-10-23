@@ -16,6 +16,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -467,6 +468,47 @@ fun GeminiLiveVoiceScreen(
                                     )
                                 }
                             }
+                        }
+                    }
+                }
+
+                // Quick voice prompt chips for instant interactive voice dialogue
+                val quickPrompts = if (isArabic) listOf(
+                    "👑 من أنت يا رمسيس؟",
+                    "🏛️ كيف بنيت معبد أبو سمبل؟",
+                    "⚔️ حدثني عن معركة قادش",
+                    "☀️ ما هي حكمتك اليوم؟"
+                ) else listOf(
+                    "👑 Who are you, Pharaoh?",
+                    "🏛️ Tell me about Abu Simbel",
+                    "⚔️ The Battle of Kadesh",
+                    "☀️ Your royal wisdom"
+                )
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp)
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    for (prompt in quickPrompts) {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(Color(0x331E293B))
+                                .border(1.dp, RoyalGold.copy(alpha = 0.4f), RoundedCornerShape(16.dp))
+                                .clickable { onQuickPromptClick(prompt) }
+                                .padding(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            Text(
+                                text = prompt,
+                                fontSize = 12.sp,
+                                fontFamily = if (isArabic) AmiriFontFamily else CinzelFontFamily,
+                                color = RoyalGoldLight,
+                                fontWeight = FontWeight.Medium
+                            )
                         }
                     }
                 }

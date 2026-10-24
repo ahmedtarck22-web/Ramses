@@ -78,11 +78,14 @@ interface RagDao {
 
     @Query("DELETE FROM rag_documents WHERE id = :id")
     suspend fun deleteDocument(id: String)
+
+    @Query("SELECT * FROM rag_documents WHERE isEnabled = 1 AND (sourceType = 'PDF_GCS' OR gcsUri LIKE 'gs://%') ORDER BY timestamp ASC")
+    suspend fun getActiveCloudPdfBooks(): List<RagDocument>
 }
 
 @Database(
     entities = [ChatSession::class, ChatMessageEntity::class, RagDocument::class],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -93,13 +96,26 @@ abstract class AppDatabase : RoomDatabase() {
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
+        val MIGRATION_1_2 = object : androidx.room.migration.Migration(1, 2) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE rag_documents ADD COLUMN gcsUri TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE rag_documents ADD COLUMN searchStoreName TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE rag_documents ADD COLUMN sourceType TEXT NOT NULL DEFAULT 'TEXT'")
+                db.execSQL("ALTER TABLE rag_documents ADD COLUMN sizeBytes INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE chat_messages ADD COLUMN groundingSourcesJson TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
         fun getInstance(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
                     context.applicationContext,
                     AppDatabase::class.java,
                     "ramses_ai_database"
-                ).fallbackToDestructiveMigrationOnDowngrade().build()
+                )
+                    .addMigrations(MIGRATION_1_2)
+                    .fallbackToDestructiveMigrationOnDowngrade()
+                    .build()
                 INSTANCE = instance
                 instance
             }

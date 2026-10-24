@@ -6,11 +6,14 @@ import android.util.Log
 import com.example.BuildConfig
 import com.example.data.model.AppLanguage
 import com.example.data.model.ChatMessage
+import com.example.data.model.FileSearchDefaults
 import com.example.data.model.GroundingSource
 import com.example.data.model.MessageSender
 import com.example.data.model.RagDocument
+import com.example.service.VertexGeminiFileSearchService
 import com.google.firebase.Firebase
 import com.google.firebase.ai.ai
+import com.google.firebase.ai.type.GenerativeBackend
 import com.google.firebase.ai.type.content
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -33,18 +36,16 @@ class GeminiApiClient {
         private const val TAG = "GeminiApiClient"
         private const val BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
-        // Primary ultra-fast models for instant sub-second TTFT and responsive dialogue
+        // Primary ultra-fast Gemini 3.x models for instant sub-second TTFT and deep reasoning
         val CANDIDATE_MODELS = listOf(
-            "gemini-3.8-flash",
+            "gemini-3.1-flash-lite",
             "gemini-3.5-flash-lite",
-            "gemini-2.0-flash",
-            "gemini-1.5-flash",
-            "gemini-2.0-flash-lite",
-            "gemini-1.5-pro"
+            "gemini-3.8-flash",
+            "gemini-3-flash-preview"
         )
 
         @Volatile
-        var preferredModel: String = "gemini-3.8-flash"
+        var preferredModel: String = "gemini-3.1-flash-lite"
 
         const val GEMINI_SYSTEM_INSTRUCTION_AR = """
 أنت Google Gemini (جيميني)، المساعد الذكي فائق التطور والسرعة.
@@ -87,17 +88,23 @@ Persona & Royal Demeanor:
 """
         fun resolveActiveModelName(model: String): String {
             return when (model) {
-                "gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.0-flash-lite", "gemini-1.5-pro", "gemini-2.5-flash" -> "gemini-3.8-flash"
-                else -> if (model.isNotBlank()) model else "gemini-3.8-flash"
+                "gemini-3.8-flash",
+                "gemini-3.5-flash-lite",
+                "gemini-3.1-flash-lite",
+                "gemini-3-flash-preview" -> model
+                else -> if (model.startsWith("gemini-3") || model.startsWith("gemini-4")) model else "gemini-3.1-flash-lite"
             }
         }
+
+        private val sharedHttpClient = OkHttpClient.Builder()
+            .connectTimeout(6, TimeUnit.SECONDS)
+            .readTimeout(14, TimeUnit.SECONDS)
+            .writeTimeout(8, TimeUnit.SECONDS)
+            .connectionPool(okhttp3.ConnectionPool(6, 3, TimeUnit.MINUTES))
+            .build()
     }
 
-    private val okHttpClient = OkHttpClient.Builder()
-        .connectTimeout(8, TimeUnit.SECONDS)
-        .readTimeout(18, TimeUnit.SECONDS)
-        .writeTimeout(10, TimeUnit.SECONDS)
-        .build()
+    private val okHttpClient: OkHttpClient = sharedHttpClient
 
     data class GeminiResult(
         val text: String,
@@ -126,12 +133,36 @@ Persona & Royal Demeanor:
         prompt: String,
         appLanguage: AppLanguage,
         isVoiceCall: Boolean,
+        ragContext: List<RagDocument> = emptyList(),
         onChunk: suspend (String) -> Unit
     ): GeminiResult {
         val lower = prompt.lowercase().trim()
         val isArabic = appLanguage == AppLanguage.ARABIC
+        val matchedCloudChunks = ragContext.filter {
+            it.isEnabled && !it.isCloudPdfBook && it.id.startsWith("cloud_chunk_")
+        }
 
         val reply = when {
+            matchedCloudChunks.isNotEmpty() -> {
+                if (isVoiceCall) {
+                    val top = matchedCloudChunks.first()
+                    "${top.content.take(220)} (${top.title})."
+                } else {
+                    buildString {
+                        if (isArabic) {
+                            append("من واقع الكتب والمجلدات المفهرسة في قاعدة معرفة اسأل رمسيس:\n\n")
+                            for (doc in matchedCloudChunks.take(3)) {
+                                append("📖 **${doc.title}**:\n${doc.content.take(550)}\n\n")
+                            }
+                        } else {
+                            append("From the indexed Egyptology books and folders in Ask Rameses:\n\n")
+                            for (doc in matchedCloudChunks.take(3)) {
+                                append("📖 **${doc.title}**:\n${doc.content.take(550)}\n\n")
+                            }
+                        }
+                    }.trim()
+                }
+            }
             lower.contains("ازيك") || lower.contains("عامل ايه") || lower.contains("كيف حالك") || lower.contains("مرحبا") || lower.contains("سلام") || lower.contains("أهلا") || lower.contains("اهلا") || lower.contains("hello") || lower.contains("how are you") || lower.contains("hi") -> {
                 if (isArabic) {
                     "أهلاً وسهلاً بك يا صديقي! أنا الملك رمسيس الثاني، حامي حمى مصر العظيمة. أنا بخير وسعادة بلقائك والتحدث معك. بم تأمرني اليوم؟"
@@ -183,9 +214,9 @@ Persona & Royal Demeanor:
             }
             else -> {
                 if (isArabic) {
-                    "أنا الملك رمسيس الثاني أستمع إليك بكل اهتمام. سأجيبك وأرشدك بما أوتيت من حكمة وسلطان، وتستطيع دائماً إضافة مفتاحك المجاني من القائمة لتوسيع المعرفة عبر Gemini 2.0 Flash."
+                    "أنا الملك رمسيس الثاني أستمع إليك بكل اهتمام. سأجيبك وأرشدك بما أوتيت من حكمة وسلطان، وتستطيع دائماً الاستفادة من قاعدة المعرفة السحابية عبر Gemini 3.8 Flash."
                 } else {
-                    "I am King Rameses II, listening closely to your words. I shall counsel you with royal insight, and you may add your free Gemini key in the side menu for unlimited exploration."
+                    "I am King Rameses II, listening closely to your words. I shall counsel you with royal insight powered by Gemini 3.8 Flash."
                 }
             }
         }
@@ -196,7 +227,7 @@ Persona & Royal Demeanor:
         for (w in words) {
             current = if (current.isEmpty()) w else "$current $w"
             onChunk(current)
-            kotlinx.coroutines.delay(25)
+            kotlinx.coroutines.delay(18)
         }
 
         return GeminiResult(text = reply, isError = false)
@@ -237,13 +268,19 @@ Persona & Royal Demeanor:
             }
         }
 
-        if (ragContext.isNotEmpty()) {
+        val plainTextDocs = ragContext.filter { it.isEnabled && !it.isCloudPdfBook }
+        if (plainTextDocs.isNotEmpty()) {
             val ragBuilder = StringBuilder("\n\n[Knowledge Base / RAG Context]:\n")
-            for (doc in ragContext) {
+            for (doc in plainTextDocs) {
                 ragBuilder.append("• ${doc.title} (${doc.category}):\n${doc.content}\n\n")
             }
             ragBuilder.append("Incorporate these authoritative historical facts accurately when relevant.")
             systemPrompt += ragBuilder.toString()
+        }
+        val activePdfBooks = ragContext.filter { it.isEnabled && it.isCloudPdfBook }
+        if (activePdfBooks.isNotEmpty()) {
+            val titles = activePdfBooks.joinToString(", ") { it.title }
+            systemPrompt += "\n\n[Indexed PDF Knowledge Base]: Ground factual claims in the linked PDF books ($titles) via File Search when relevant and cite accurate details."
         }
 
         val systemInstructionObj = JSONObject().apply {
@@ -333,15 +370,52 @@ Persona & Royal Demeanor:
         }
         requestJson.put("generationConfig", generationConfig)
 
-        // Google Search Grounding (only enabled if requested AND NOT a live voice call)
-        if (withSearch && !isVoiceCall) {
-            val toolsArray = JSONArray().apply {
-                put(JSONObject().put("googleSearch", JSONObject()))
+        // Attach Gemini File Search / Vertex AI Search tools & Google Search Grounding (when not a voice call)
+        if (!isVoiceCall) {
+            val toolsArray = JSONArray()
+            val linkedStoreNames = ragContext
+                .filter { it.isEnabled && it.searchStoreName.startsWith("fileSearchStores/") }
+                .map { it.searchStoreName }
+                .distinct()
+            val linkedVertexDataStore = ragContext
+                .firstOrNull { it.isEnabled && it.searchStoreName.startsWith("projects/") }
+                ?.searchStoreName
+
+            if (linkedStoreNames.isNotEmpty()) {
+                val storeNamesJson = JSONArray()
+                linkedStoreNames.forEach { storeNamesJson.put(it) }
+                toolsArray.put(
+                    JSONObject().put(
+                        "fileSearch",
+                        JSONObject().put("fileSearchStoreNames", storeNamesJson)
+                    )
+                )
+            } else if (!linkedVertexDataStore.isNullOrBlank()) {
+                toolsArray.put(
+                    JSONObject().put(
+                        "retrieval",
+                        JSONObject().put(
+                            "vertexAiSearch",
+                            JSONObject().put("datastore", linkedVertexDataStore)
+                        )
+                    )
+                )
             }
-            requestJson.put("tools", toolsArray)
+
+            if (withSearch) {
+                toolsArray.put(JSONObject().put("googleSearch", JSONObject()))
+            }
+
+            if (toolsArray.length() > 0) {
+                requestJson.put("tools", toolsArray)
+            }
         }
 
         return requestJson.toString()
+    }
+
+    private val defaultFirebaseAiModel by lazy {
+        Firebase.ai.generativeModel(modelName = FileSearchDefaults.DEFAULT_VERTEX_GEMINI_MODEL)
     }
 
     private suspend fun tryFirebaseAiStream(
@@ -350,23 +424,32 @@ Persona & Royal Demeanor:
         imageBitmap: Bitmap? = null,
         ragContext: List<RagDocument> = emptyList(),
         onChunk: suspend (String) -> Unit
-    ): String? {
+    ): GeminiResult? {
         return try {
-            val modelName = resolveActiveModelName(preferredModel)
-            val generativeModel = Firebase.ai.generativeModel(
-                modelName = modelName,
-                systemInstruction = content { text(systemInstruction) }
-            )
+            val enabledDocs = ragContext.filter { it.isEnabled }
+            val cloudPdfDocs = enabledDocs.filter { it.isCloudPdfBook && it.gcsUri.startsWith("gs://") }
+            val plainDocs = enabledDocs.filter { !it.isCloudPdfBook }
+
+            val generativeModel = if (cloudPdfDocs.isNotEmpty()) {
+                Firebase.ai(backend = GenerativeBackend.vertexAI(location = FileSearchDefaults.DEFAULT_VERTEX_LOCATION))
+                    .generativeModel(
+                        modelName = FileSearchDefaults.DEFAULT_VERTEX_GEMINI_MODEL,
+                        systemInstruction = content { text(systemInstruction) }
+                    )
+            } else {
+                Firebase.ai.generativeModel(
+                    modelName = FileSearchDefaults.DEFAULT_VERTEX_GEMINI_MODEL,
+                    systemInstruction = content { text(systemInstruction) }
+                )
+            }
 
             val input = content("user") {
-                if (ragContext.isNotEmpty()) {
-                    val enabledDocs = ragContext.filter { it.isEnabled }
-                    if (enabledDocs.isNotEmpty()) {
-                        val ragText = enabledDocs.joinToString("\n\n") { "[وثيقة: ${it.title}]: ${it.content}" }
-                        text("سياق معرفي موثق:\n$ragText\n\nالسؤال: $prompt")
-                    } else {
-                        text(prompt)
-                    }
+                for (pdfDoc in cloudPdfDocs.take(FileSearchDefaults.REQUIRED_PDF_BOOK_COUNT)) {
+                    fileData(uri = pdfDoc.gcsUri, mimeType = FileSearchDefaults.PDF_MIME_TYPE)
+                }
+                if (plainDocs.isNotEmpty()) {
+                    val ragText = plainDocs.joinToString("\n\n") { "[وثيقة: ${it.title}]: ${it.content}" }
+                    text("سياق معرفي موثق:\n$ragText\n\nالسؤال: $prompt")
                 } else {
                     text(prompt)
                 }
@@ -376,7 +459,7 @@ Persona & Royal Demeanor:
             }
 
             val accumulated = StringBuilder()
-            withTimeout(2500L) {
+            withTimeout(60_000L) {
                 generativeModel.generateContentStream(input).collect { chunk ->
                     val chunkText = chunk.text.orEmpty()
                     if (chunkText.isNotEmpty()) {
@@ -387,7 +470,12 @@ Persona & Royal Demeanor:
             }
 
             val resultText = accumulated.toString().trim()
-            if (resultText.isNotEmpty()) resultText else null
+            if (resultText.isNotEmpty()) {
+                val citations = cloudPdfDocs.map { GroundingSource(title = it.title, uri = it.gcsUri) }
+                GeminiResult(text = resultText, groundingSources = citations, isError = false)
+            } else {
+                null
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -399,26 +487,49 @@ Persona & Royal Demeanor:
     private suspend fun tryFirebaseAiUnary(
         prompt: String,
         systemInstruction: String,
-        imageBitmap: Bitmap? = null
-    ): String? {
+        imageBitmap: Bitmap? = null,
+        ragContext: List<RagDocument> = emptyList()
+    ): GeminiResult? {
         return try {
-            val modelName = resolveActiveModelName(preferredModel)
-            val generativeModel = Firebase.ai.generativeModel(
-                modelName = modelName,
-                systemInstruction = content { text(systemInstruction) }
-            )
+            val enabledDocs = ragContext.filter { it.isEnabled }
+            val cloudPdfDocs = enabledDocs.filter { it.isCloudPdfBook && it.gcsUri.startsWith("gs://") }
+            val plainDocs = enabledDocs.filter { !it.isCloudPdfBook }
+            val generativeModel = if (cloudPdfDocs.isNotEmpty()) {
+                Firebase.ai(backend = GenerativeBackend.vertexAI(location = FileSearchDefaults.DEFAULT_VERTEX_LOCATION))
+                    .generativeModel(
+                        modelName = FileSearchDefaults.DEFAULT_VERTEX_GEMINI_MODEL,
+                        systemInstruction = content { text(systemInstruction) }
+                    )
+            } else if (systemInstruction.isNotBlank()) {
+                Firebase.ai.generativeModel(
+                    modelName = FileSearchDefaults.DEFAULT_VERTEX_GEMINI_MODEL,
+                    systemInstruction = content { text(systemInstruction) }
+                )
+            } else {
+                defaultFirebaseAiModel
+            }
 
             val input = content("user") {
-                text(prompt)
+                for (pdfDoc in cloudPdfDocs.take(FileSearchDefaults.REQUIRED_PDF_BOOK_COUNT)) {
+                    fileData(uri = pdfDoc.gcsUri, mimeType = FileSearchDefaults.PDF_MIME_TYPE)
+                }
+                if (plainDocs.isNotEmpty()) {
+                    val ragText = plainDocs.joinToString("\n\n") { "[وثيقة: ${it.title}]: ${it.content}" }
+                    text("سياق معرفي موثق:\n$ragText\n\nالسؤال: $prompt")
+                } else {
+                    text(prompt)
+                }
                 if (imageBitmap != null) {
                     image(imageBitmap)
                 }
             }
 
-            val response = withTimeout(2500L) {
+            val response = withTimeout(60_000L) {
                 generativeModel.generateContent(input)
             }
-            response.text?.trim()?.ifEmpty { null }
+            val text = response.text?.trim()?.ifEmpty { null } ?: return null
+            val citations = cloudPdfDocs.map { GroundingSource(title = it.title, uri = it.gcsUri) }
+            GeminiResult(text = text, groundingSources = citations, isError = false)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -456,7 +567,8 @@ Persona & Royal Demeanor:
             val mediaType = "application/json; charset=utf-8".toMediaType()
             var trySearch = enableSearchGrounding && !isVoiceCall
 
-            val modelsToTry = listOf(preferredModel) + CANDIDATE_MODELS.filter { it != preferredModel }
+            val modelsToTry = (listOf(preferredModel) + CANDIDATE_MODELS.filter { it != preferredModel })
+                .distinctBy { resolveActiveModelName(it) }
             for (modelName in modelsToTry) {
                 val targetModel = resolveActiveModelName(modelName)
                 val requestBodyJson = buildRequestBody(
@@ -526,21 +638,9 @@ Persona & Royal Demeanor:
                                         }
                                     }
 
-                                    // Extract grounding sources
-                                    val metadata = candidate.optJSONObject("groundingMetadata")
-                                    val chunks = metadata?.optJSONArray("groundingChunks")
-                                    if (chunks != null) {
-                                        for (i in 0 until chunks.length()) {
-                                            val web = chunks.getJSONObject(i).optJSONObject("web")
-                                            if (web != null) {
-                                                val title = web.optString("title", "Google Search")
-                                                val uri = web.optString("uri", "")
-                                                if (uri.isNotEmpty()) {
-                                                    groundingSources.add(GroundingSource(title, uri))
-                                                }
-                                            }
-                                        }
-                                    }
+                                    // Extract both File Search (`retrievedContext`) and Google Search (`web`) grounding sources
+                                    val (extractedSources, _) = VertexGeminiFileSearchService.extractGroundingFromCandidate(candidate)
+                                    groundingSources.addAll(extractedSources)
                                 }
                             } catch (e: Exception) {
                                 // Skip malformed partial frame
@@ -565,7 +665,7 @@ Persona & Royal Demeanor:
         }
     }
 
-        // 2. Fallback: Try Firebase AI Logic (Gemini 3.8 Flash, App Check protected)
+        // 2. Fallback: Try Firebase AI Logic / Vertex AI (Gemini 3.8 Flash, App Check protected, supports gs:// PDFs)
         val firebaseAiStreamResult = tryFirebaseAiStream(
             prompt = prompt,
             systemInstruction = systemInstruction,
@@ -573,12 +673,8 @@ Persona & Royal Demeanor:
             ragContext = ragContext,
             onChunk = onChunk
         )
-        if (!firebaseAiStreamResult.isNullOrBlank()) {
-            return@withContext GeminiResult(
-                text = firebaseAiStreamResult,
-                groundingSources = emptyList(),
-                isError = false
-            )
+        if (firebaseAiStreamResult != null && firebaseAiStreamResult.text.isNotBlank()) {
+            return@withContext firebaseAiStreamResult
         }
 
         // 3. Fallback: Try non-streaming single-shot
@@ -600,7 +696,7 @@ Persona & Royal Demeanor:
         }
 
         if (apiKey.isBlank()) {
-            return@withContext generateOfflineKnowledgeResponse(prompt, appLanguage, isVoiceCall, onChunk)
+            return@withContext generateOfflineKnowledgeResponse(prompt, appLanguage, isVoiceCall, ragContext, onChunk)
         }
 
         val errorText = buildFriendlyErrorMessage(lastErrorMessage, appLanguage)
@@ -642,9 +738,9 @@ Persona & Royal Demeanor:
             }
             isModelError -> {
                 if (isArabic) {
-                    "نموذج الذكاء الاصطناعي المحدد غير متاح حالياً. تم التحويل التلقائي لنموذج Gemini 2.0 Flash."
+                    "نموذج الذكاء الاصطناعي المحدد غير متاح حالياً. تم التحويل التلقائي لنموذج Gemini 3.8 Flash."
                 } else {
-                    "The selected AI model is currently unavailable. Switched to Gemini 2.0 Flash."
+                    "The selected AI model is currently unavailable. Switched to Gemini 3.8 Flash."
                 }
             }
             lastErrorMessage.isNotBlank() -> {
@@ -686,7 +782,8 @@ Persona & Royal Demeanor:
         if (apiKey.isNotBlank()) {
             val mediaType = "application/json; charset=utf-8".toMediaType()
 
-            val modelsToTry = listOf(preferredModel) + CANDIDATE_MODELS.filter { it != preferredModel }
+            val modelsToTry = (listOf(preferredModel) + CANDIDATE_MODELS.filter { it != preferredModel })
+                .distinctBy { resolveActiveModelName(it) }
             for (modelName in modelsToTry) {
                 try {
                     val targetModel = resolveActiveModelName(modelName)
@@ -743,30 +840,14 @@ Persona & Royal Demeanor:
                         }
                     }
 
-                    val groundingSources = mutableListOf<GroundingSource>()
-                    val groundingMetadata = candidate.optJSONObject("groundingMetadata")
-                    if (groundingMetadata != null) {
-                        val groundingChunks = groundingMetadata.optJSONArray("groundingChunks")
-                        if (groundingChunks != null) {
-                            for (i in 0 until groundingChunks.length()) {
-                                val chunk = groundingChunks.getJSONObject(i)
-                                val web = chunk.optJSONObject("web")
-                                if (web != null) {
-                                    val title = web.optString("title", "Google Search")
-                                    val uri = web.optString("uri", "")
-                                    if (uri.isNotEmpty()) {
-                                        groundingSources.add(GroundingSource(title = title, uri = uri))
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    val (extractedSources, _) = VertexGeminiFileSearchService.extractGroundingFromCandidate(candidate)
+                    val groundingSources = extractedSources.toMutableList()
 
                     val finalAnswer = responseStringBuilder.toString().trim()
                     if (finalAnswer.isNotEmpty()) {
                         return@withContext GeminiResult(
                             text = finalAnswer,
-                            groundingSources = groundingSources.distinctBy { it.uri },
+                            groundingSources = groundingSources.distinctBy { "${it.title}|${it.uri}" },
                             isError = false
                         )
                     }
@@ -778,22 +859,19 @@ Persona & Royal Demeanor:
         }
     }
 
-        // 2. Fallback: Try Firebase AI Logic (Gemini 3.8 Flash, App Check protected)
+        // 2. Fallback: Try Firebase AI Logic / Vertex AI (Gemini 3.8 Flash, App Check protected)
         val firebaseAiUnaryResult = tryFirebaseAiUnary(
             prompt = prompt,
             systemInstruction = systemInstruction,
-            imageBitmap = imageBitmap
+            imageBitmap = imageBitmap,
+            ragContext = ragContext
         )
-        if (!firebaseAiUnaryResult.isNullOrBlank()) {
-            return@withContext GeminiResult(
-                text = firebaseAiUnaryResult,
-                groundingSources = emptyList(),
-                isError = false
-            )
+        if (firebaseAiUnaryResult != null && firebaseAiUnaryResult.text.isNotBlank()) {
+            return@withContext firebaseAiUnaryResult
         }
 
         if (apiKey.isBlank()) {
-            return@withContext generateOfflineKnowledgeResponse(prompt, appLanguage, isVoiceCall) { /* no-op */ }
+            return@withContext generateOfflineKnowledgeResponse(prompt, appLanguage, isVoiceCall, ragContext) { /* no-op */ }
         }
 
         val errorText = buildFriendlyErrorMessage(lastErrorMessage, appLanguage)

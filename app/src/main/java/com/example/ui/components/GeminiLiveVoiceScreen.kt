@@ -84,6 +84,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.example.data.model.AppLanguage
 import com.example.data.model.AppStrings
+import com.example.data.model.AvatarRigConfig
 import com.example.data.model.VoiceCallState
 import com.example.ui.theme.AmiriFontFamily
 import com.example.ui.theme.CinzelFontFamily
@@ -125,9 +126,10 @@ fun GeminiLiveEqualizerBars(
                 label = "bar_$i"
             )
 
+            val normalizedRms = (rmsDb.coerceIn(0f, 15f) / 15f)
             val baseHeight = when (state) {
-                VoiceCallState.LISTENING -> (8f + (rmsDb.coerceIn(0f, 14f) / 14f) * 28f * animProgress).dp
-                VoiceCallState.SPEAKING -> (12f + (22f * animProgress)).dp
+                VoiceCallState.LISTENING -> (7f + normalizedRms * 28f * animProgress).dp
+                VoiceCallState.SPEAKING -> (9f + (maxOf(0.35f, normalizedRms) * 28f * animProgress)).dp
                 VoiceCallState.THINKING -> (6f + (10f * animProgress)).dp
                 VoiceCallState.IDLE -> 5.dp
             }
@@ -161,6 +163,13 @@ fun GeminiLiveVoiceScreen(
     lastRamsesSpeech: String,
     rmsDb: Float = 0f,
     appLanguage: AppLanguage = AppLanguage.ARABIC,
+    rigConfig: AvatarRigConfig = AvatarRigConfig(),
+    isNativeLiveConnected: Boolean = false,
+    isConnectingLive: Boolean = false,
+    isMicMuted: Boolean = false,
+    isSpeakerMuted: Boolean = false,
+    onToggleMicMute: () -> Unit = {},
+    onToggleSpeakerMute: () -> Unit = {},
     onToggleLanguage: () -> Unit,
     onStartListening: () -> Unit,
     onStopListening: () -> Unit,
@@ -168,7 +177,6 @@ fun GeminiLiveVoiceScreen(
     onQuickPromptClick: (String) -> Unit,
     onEndCall: () -> Unit
 ) {
-    var isMuted by remember { mutableStateOf(false) }
     var inCallTextInput by remember { mutableStateOf("") }
     var showKeyboardInput by remember { mutableStateOf(false) }
     var callSeconds by remember { mutableStateOf(0) }
@@ -238,8 +246,52 @@ fun GeminiLiveVoiceScreen(
                         )
                     }
 
-                    // Center is intentionally empty for a pristine, immersive Gemini Live look
-                    Spacer(modifier = Modifier.weight(1f))
+                    // Real-Time Gemini Live WebSocket Status Pill
+                    val mins = callSeconds / 60
+                    val secs = callSeconds % 60
+                    val timeLabel = String.format(Locale.US, "%02d:%02d", mins, secs)
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(18.dp))
+                            .background(
+                                if (isNativeLiveConnected) Color(0x2610B981)
+                                else if (isConnectingLive) Color(0x26F59E0B)
+                                else Color(0x22FFFFFF)
+                            )
+                            .border(
+                                1.dp,
+                                if (isNativeLiveConnected) Color(0xFF10B981).copy(alpha = 0.6f)
+                                else if (isConnectingLive) RoyalGold.copy(alpha = 0.6f)
+                                else Color.White.copy(alpha = 0.2f),
+                                RoundedCornerShape(18.dp)
+                            )
+                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(8.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (isNativeLiveConnected) Color(0xFF10B981)
+                                        else if (isConnectingLive) RoyalGold
+                                        else EgyptianCyan
+                                    )
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = when {
+                                    isConnectingLive -> if (isArabic) "جاري فتح البث الصوتي المباشر..." else "Connecting Live Stream..."
+                                    isNativeLiveConnected -> if (isArabic) "بث حي مباشر 24kHz • $timeLabel" else "Live Native Audio • $timeLabel"
+                                    else -> timeLabel
+                                },
+                                fontFamily = AmiriFontFamily,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 11.sp,
+                                color = Color.White
+                            )
+                        }
+                    }
 
                     // Language Toggle
                     Box(
@@ -290,6 +342,7 @@ fun GeminiLiveVoiceScreen(
                             isThinking = voiceCallState == VoiceCallState.THINKING,
                             rmsDb = rmsDb,
                             appLanguage = appLanguage,
+                            rigConfig = rigConfig,
                             onStopSpeaking = onStopSpeaking,
                             isAutoSpeakEnabled = true,
                             showBackgroundGradient = false,
@@ -330,67 +383,72 @@ fun GeminiLiveVoiceScreen(
                             .verticalScroll(responseScrollState),
                         contentAlignment = Alignment.Center
                     ) {
-                        when {
-                            // AI is speaking or has responded
-                            lastRamsesSpeech.isNotBlank() && (voiceCallState == VoiceCallState.SPEAKING || voiceCallState == VoiceCallState.IDLE) -> {
-                                Text(
-                                    text = lastRamsesSpeech,
-                                    fontFamily = if (isArabic) AmiriFontFamily else CinzelFontFamily,
-                                    fontSize = 14.sp,
-                                    color = RoyalGoldLight,
-                                    textAlign = TextAlign.Center,
-                                    lineHeight = 22.sp
-                                )
-                            }
-                            // User is speaking / speech transcribed
-                            lastTranscript.isNotBlank() -> {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            if (lastTranscript.isNotBlank()) {
                                 Text(
                                     text = "« $lastTranscript »",
                                     fontFamily = if (isArabic) AmiriFontFamily else CinzelFontFamily,
-                                    fontSize = 14.sp,
-                                    color = Color.White.copy(alpha = 0.9f),
+                                    fontSize = 12.sp,
+                                    color = Color(0xFF93C5FD),
                                     textAlign = TextAlign.Center,
-                                    lineHeight = 21.sp
+                                    lineHeight = 18.sp
                                 )
                             }
-                            // AI is thinking / reasoning
-                            voiceCallState == VoiceCallState.THINKING -> {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(16.dp),
-                                        color = EgyptianCyan,
-                                        strokeWidth = 2.dp
-                                    )
+
+                            when {
+                                lastRamsesSpeech.isNotBlank() && (voiceCallState == VoiceCallState.SPEAKING || voiceCallState == VoiceCallState.LISTENING || voiceCallState == VoiceCallState.IDLE) -> {
                                     Text(
-                                        text = if (isArabic) "رمسيس يستحضر الإجابة..." else "Rameses is reasoning...",
+                                        text = lastRamsesSpeech,
                                         fontFamily = if (isArabic) AmiriFontFamily else CinzelFontFamily,
-                                        fontSize = 13.sp,
-                                        color = EgyptianCyan
+                                        fontSize = 14.sp,
+                                        color = RoyalGoldLight,
+                                        textAlign = TextAlign.Center,
+                                        lineHeight = 22.sp
                                     )
                                 }
-                            }
-                            // Listening state
-                            voiceCallState == VoiceCallState.LISTENING -> {
-                                Text(
-                                    text = if (isArabic) "« تحدّث الآن وسيجيبك رمسيس... »" else "« Speak now and Rameses will reply... »",
-                                    fontFamily = if (isArabic) AmiriFontFamily else CinzelFontFamily,
-                                    fontSize = 13.sp,
-                                    color = Color(0xFF00E5FF).copy(alpha = 0.85f),
-                                    textAlign = TextAlign.Center
-                                )
-                            }
-                            // Idle default state
-                            else -> {
-                                Text(
-                                    text = if (isArabic) "اضغط على زر الميكروفون لبدء الحديث" else "Tap the microphone to speak",
-                                    fontFamily = if (isArabic) AmiriFontFamily else CinzelFontFamily,
-                                    fontSize = 13.sp,
-                                    color = Color.White.copy(alpha = 0.45f),
-                                    textAlign = TextAlign.Center
-                                )
+                                voiceCallState == VoiceCallState.THINKING -> {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(16.dp),
+                                            color = EgyptianCyan,
+                                            strokeWidth = 2.dp
+                                        )
+                                        Text(
+                                            text = if (isConnectingLive) {
+                                                if (isArabic) "جاري الاتصال بصوت Gemini Live المباشر..." else "Connecting to real Gemini Live audio..."
+                                            } else {
+                                                if (isArabic) "رمسيس يستجيب الآن..." else "Rameses is responding..."
+                                            },
+                                            fontFamily = if (isArabic) AmiriFontFamily else CinzelFontFamily,
+                                            fontSize = 13.sp,
+                                            color = EgyptianCyan
+                                        )
+                                    }
+                                }
+                                voiceCallState == VoiceCallState.LISTENING -> {
+                                    Text(
+                                        text = if (isArabic) "« تحدّث بحرية في أي وقت.. رمسيس يسمعك مباشرة ويمكنك مقاطعته »" else "« Speak freely anytime.. Rameses hears you live with instant barge-in »",
+                                        fontFamily = if (isArabic) AmiriFontFamily else CinzelFontFamily,
+                                        fontSize = 13.sp,
+                                        color = Color(0xFF00E5FF).copy(alpha = 0.88f),
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
+                                else -> {
+                                    Text(
+                                        text = if (isArabic) "الميكروفون مكتوم مؤقتاً — اضغط زر الميكروفون للمتابعة" else "Microphone muted — tap the mic button to resume",
+                                        fontFamily = if (isArabic) AmiriFontFamily else CinzelFontFamily,
+                                        fontSize = 13.sp,
+                                        color = Color.White.copy(alpha = 0.55f),
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
                             }
                         }
                     }
@@ -523,20 +581,17 @@ fun GeminiLiveVoiceScreen(
                 ) {
                     // Mute / Speaker Toggle
                     IconButton(
-                        onClick = {
-                            isMuted = !isMuted
-                            if (isMuted) onStopSpeaking()
-                        },
+                        onClick = { onToggleSpeakerMute() },
                         modifier = Modifier
                             .size(52.dp)
                             .clip(CircleShape)
-                            .background(if (isMuted) Color(0x33DC2626) else Color(0x22FFFFFF))
-                            .border(1.dp, if (isMuted) Color(0xFFDC2626) else Color.White.copy(alpha = 0.15f), CircleShape)
+                            .background(if (isSpeakerMuted) Color(0x33DC2626) else Color(0x22FFFFFF))
+                            .border(1.dp, if (isSpeakerMuted) Color(0xFFDC2626) else Color.White.copy(alpha = 0.15f), CircleShape)
                     ) {
                         Icon(
-                            imageVector = if (isMuted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
+                            imageVector = if (isSpeakerMuted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
                             contentDescription = "Mute/Unmute Speaker",
-                            tint = if (isMuted) Color(0xFFF87171) else Color.White,
+                            tint = if (isSpeakerMuted) Color(0xFFF87171) else Color.White,
                             modifier = Modifier.size(22.dp)
                         )
                     }
@@ -558,9 +613,9 @@ fun GeminiLiveVoiceScreen(
                         )
                     }
 
-                    // Primary Live Mic Action
+                    // Primary Live Mic Action (Mute/Unmute in Full-Duplex Live, or Interrupt AI Speech)
                     Box(contentAlignment = Alignment.Center) {
-                        if (voiceCallState == VoiceCallState.LISTENING) {
+                        if (voiceCallState == VoiceCallState.LISTENING && !isMicMuted) {
                             Box(
                                 modifier = Modifier
                                     .size(80.dp)
@@ -571,12 +626,13 @@ fun GeminiLiveVoiceScreen(
 
                         IconButton(
                             onClick = {
-                                if (voiceCallState == VoiceCallState.LISTENING) {
-                                    onStopListening()
-                                } else if (voiceCallState == VoiceCallState.SPEAKING) {
-                                    // Interrupt and start listening
+                                if (voiceCallState == VoiceCallState.SPEAKING) {
+                                    // Instant barge-in interruption!
                                     onStopSpeaking()
-                                    onStartListening()
+                                } else if (isNativeLiveConnected) {
+                                    onToggleMicMute()
+                                } else if (voiceCallState == VoiceCallState.LISTENING) {
+                                    onStopListening()
                                 } else {
                                     onStartListening()
                                 }
@@ -585,27 +641,28 @@ fun GeminiLiveVoiceScreen(
                                 .size(68.dp)
                                 .clip(CircleShape)
                                 .background(
-                                    when (voiceCallState) {
-                                        VoiceCallState.LISTENING -> Color(0xFF00E5FF)
-                                        VoiceCallState.SPEAKING -> RoyalGoldLight
+                                    when {
+                                        voiceCallState == VoiceCallState.SPEAKING -> RoyalGoldLight
+                                        isMicMuted -> Color(0xFF334155)
+                                        voiceCallState == VoiceCallState.LISTENING -> Color(0xFF00E5FF)
                                         else -> Color(0xFF1E293B)
                                     }
                                 )
                                 .border(
                                     2.dp,
-                                    if (voiceCallState == VoiceCallState.LISTENING) Color(0xFFE0F7FA) else RoyalGold,
+                                    if (voiceCallState == VoiceCallState.LISTENING && !isMicMuted) Color(0xFFE0F7FA) else RoyalGold,
                                     CircleShape
                                 )
                                 .testTag("gemini_live_mic_action")
                         ) {
                             Icon(
-                                imageVector = when (voiceCallState) {
-                                    VoiceCallState.LISTENING -> Icons.Default.Mic
-                                    VoiceCallState.SPEAKING -> Icons.Default.Stop
+                                imageVector = when {
+                                    voiceCallState == VoiceCallState.SPEAKING -> Icons.Default.Stop
+                                    isMicMuted -> Icons.Default.MicOff
                                     else -> Icons.Default.Mic
                                 },
                                 contentDescription = "Mic Action",
-                                tint = if (voiceCallState == VoiceCallState.LISTENING || voiceCallState == VoiceCallState.SPEAKING) Color.Black else Color.White,
+                                tint = if ((voiceCallState == VoiceCallState.LISTENING && !isMicMuted) || voiceCallState == VoiceCallState.SPEAKING) Color.Black else Color.White,
                                 modifier = Modifier.size(30.dp)
                             )
                         }

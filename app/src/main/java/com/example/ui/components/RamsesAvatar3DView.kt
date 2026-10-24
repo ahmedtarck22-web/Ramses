@@ -1,46 +1,32 @@
 package com.example.ui.components
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.VolumeOff
-import androidx.compose.material.icons.automirrored.filled.VolumeUp
-import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.GraphicEq
+import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -50,15 +36,18 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.AppLanguage
+import com.example.data.model.AvatarRigConfig
 import com.example.ui.theme.AmiriFontFamily
-import com.example.ui.theme.CinzelFontFamily
 import com.example.ui.theme.EgyptianCyan
+import com.example.ui.theme.PharaonicMidnight
 import com.example.ui.theme.RoyalGold
 import com.example.ui.theme.RoyalGoldLight
 import io.github.sceneview.Scene
@@ -70,20 +59,22 @@ import io.github.sceneview.rememberCameraNode
 import io.github.sceneview.rememberEngine
 import io.github.sceneview.rememberModelLoader
 import io.github.sceneview.rememberNodes
-import kotlin.math.cos
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import kotlin.math.sin
 
 /**
- * High-fidelity 3D Avatar Viewport for King Ramses II.
+ * High-fidelity 3D Avatar Viewport for King Ramses II & Custom Rigged .GLB Models.
  *
- * Implements user requirements:
- * - Direct SceneView loading of Ramses.final.glb exclusively.
- * - Perfectly centered full-body representation (scaled and centered so the complete figure from crown to feet is visible).
- * - Rotated by -90 degrees around Y so King Ramses faces forward directly at the user.
- * - No manual drag/rotation/zoom gestures.
- * - Prominent royal body language & head gestures when the AI speaks.
- * - Real-time acoustic lipsync waves radiating from King Ramses's mouth area.
- * - Deep navy/midnight pharaonic background.
+ * Features:
+ * - Loads custom user-imported .glb files (with full Skeletal Armature animation playback)
+ *   or built-in Ramses.final.glb.
+ * - Real-time GPU Morph Target lip-sync driven by Gemini Live 24kHz PCM audio RMS.
+ * - Optional interactive Rig Skeleton Bone Lines ("خطوط الـ Rig") live overlay.
+ * - Clipped graphicsLayer to prevent SurfaceView BLASTBufferQueue resize artifacts.
  */
 @Composable
 fun RamsesAvatar3DView(
@@ -93,6 +84,8 @@ fun RamsesAvatar3DView(
     isThinking: Boolean = false,
     rmsDb: Float = 0f,
     appLanguage: AppLanguage = AppLanguage.ARABIC,
+    rigConfig: AvatarRigConfig = AvatarRigConfig(),
+    onOpenRigStudio: (() -> Unit)? = null,
     onStopSpeaking: () -> Unit = {},
     onToggleAutoSpeak: () -> Unit = {},
     isAutoSpeakEnabled: Boolean = true,
@@ -107,9 +100,8 @@ fun RamsesAvatar3DView(
     var currentModelNode by remember { mutableStateOf<ModelNode?>(null) }
     var isLoading by remember { mutableStateOf(true) }
 
-    // Orientation rotated 180 degrees per user request (from 270f to 90f)
-    val baseRotationY = 90f
-    val baseScale = 0.54f
+    val baseRotationY = rigConfig.modelRotationY
+    val baseScale = rigConfig.modelScale
 
     // Multi-track continuous animations for lifelike presence
     val infiniteTransition = rememberInfiniteTransition(label = "ramses_avatar_dynamics")
@@ -130,13 +122,13 @@ fun RamsesAvatar3DView(
         initialValue = 0f,
         targetValue = (2 * Math.PI).toFloat(),
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 240, easing = LinearEasing),
+            animation = tween(durationMillis = 220, easing = LinearEasing),
             repeatMode = RepeatMode.Restart
         ),
         label = "avatar_lipsync"
     )
 
-    // 3. Royal hand-to-chin gesture & speech emphasis cycle (slow dignified cadence)
+    // 3. Royal hand-to-chin gesture & speech emphasis cycle
     val speechNodCycle by infiniteTransition.animateFloat(
         initialValue = 0f,
         targetValue = (2 * Math.PI).toFloat(),
@@ -147,52 +139,84 @@ fun RamsesAvatar3DView(
         label = "avatar_nod"
     )
 
-    // Load the 3D model: exclusively Ramses.final.glb
-    LaunchedEffect(Unit) {
+    // Reload 3D model whenever customModelPath changes
+    LaunchedEffect(rigConfig.customModelPath) {
         isLoading = true
         childNodes.clear()
         currentModelNode = null
 
-        val candidatePaths = listOf(
-            "models/Ramses.final.glb"
-        )
+        var loadedInstance: io.github.sceneview.model.ModelInstance? = null
 
-        for (path in candidatePaths) {
+        // 1. Try loading user-imported custom .glb file first if configured
+        val customPath = rigConfig.customModelPath
+        if (!customPath.isNullOrBlank()) {
             try {
-                val instance = modelLoader.createModelInstance(assetFileLocation = path)
-                if (instance != null) {
-                    val node = ModelNode(
-                        modelInstance = instance,
-                        scaleToUnits = baseScale
-                    )
-                    // Center the model's bounding box at (0, 0, 0) so the whole body is centered in viewport
-                    node.centerOrigin(Position(0f, 0f, 0f))
-
-                    // Initial front-facing posture
-                    node.rotation = Rotation(x = 0f, y = baseRotationY, z = 0f)
-                    node.position = Position(x = 0f, y = -0.02f + verticalOffset, z = 0f)
-                    node.scale = Scale(baseScale, baseScale, baseScale)
-
-                    // Initialize morph targets to 0
-                    try {
-                        node.setMorphWeights(floatArrayOf(0f, 0f), 0)
-                        node.renderableNodes.forEach {
-                            it.setMorphWeights(floatArrayOf(0f, 0f), 0)
-                        }
-                    } catch (_: Exception) {}
-
-                    currentModelNode = node
-                    childNodes.add(node)
-                    break
+                val byteBuffer = withContext(Dispatchers.IO) {
+                    val f = File(customPath)
+                    if (f.exists() && f.length() > 16L) {
+                        val bytes = f.readBytes()
+                        ByteBuffer.allocateDirect(bytes.size)
+                            .order(ByteOrder.nativeOrder())
+                            .apply {
+                                put(bytes)
+                                rewind()
+                            }
+                    } else {
+                        null
+                    }
                 }
-            } catch (e: Exception) {
-                // Ignore and keep safe
+                if (byteBuffer != null) {
+                    loadedInstance = modelLoader.createModelInstance(byteBuffer)
+                }
+            } catch (_: Exception) {
+                loadedInstance = null
             }
         }
+
+        // 2. Fallback to built-in Ramses.final.glb
+        if (loadedInstance == null) {
+            try {
+                loadedInstance = modelLoader.createModelInstance(assetFileLocation = "models/Ramses.final.glb")
+            } catch (_: Exception) {
+                loadedInstance = null
+            }
+        }
+
+        if (loadedInstance != null) {
+            try {
+                val node = ModelNode(
+                    modelInstance = loadedInstance,
+                    scaleToUnits = baseScale
+                )
+                node.centerOrigin(Position(0f, 0f, 0f))
+                node.rotation = Rotation(x = 0f, y = baseRotationY, z = 0f)
+                node.position = Position(x = 0f, y = -0.02f + verticalOffset, z = 0f)
+                node.scale = Scale(baseScale, baseScale, baseScale)
+
+                // Play embedded glTF Skeletal Armature animations automatically if present (e.g. Mixamo / AccuRIG / Blender)
+                try {
+                    if (node.animationCount > 0) {
+                        node.playAnimation(0, loop = true)
+                    }
+                } catch (_: Exception) {}
+
+                // Initialize morph targets to 0 if available
+                try {
+                    node.setMorphWeights(floatArrayOf(0f, 0f), 0)
+                    node.renderableNodes.forEach {
+                        it.setMorphWeights(floatArrayOf(0f, 0f), 0)
+                    }
+                } catch (_: Exception) {}
+
+                currentModelNode = node
+                childNodes.add(node)
+            } catch (_: Exception) {}
+        }
+
         isLoading = false
     }
 
-    // Dynamic real-time transform updates: mouth lip-sync, hand to chin, and majestic breathing
+    // Dynamic real-time transform updates: mouth lip-sync, hand gesture, skeletal animation speed & majestic breathing
     LaunchedEffect(
         isSpeaking,
         isListening,
@@ -200,36 +224,40 @@ fun RamsesAvatar3DView(
         rmsDb,
         breathingPhase,
         speechSyllableCycle,
-        speechNodCycle
+        speechNodCycle,
+        baseRotationY,
+        baseScale,
+        rigConfig.lipSyncIntensity,
+        rigConfig.gestureIntensity
     ) {
         currentModelNode?.let { node ->
-            // Subtle, dignified breathing (gentle, majestic posture without shaking)
-            val idleSwayY = sin(breathingPhase * 0.4f) * 0.4f
+            val idleSwayY = sin(breathingPhase * 0.4f) * 0.45f
             val idleElevationY = -0.02f + (sin(breathingPhase) * 0.004f)
 
-            // 1. Real 3D Mouth Lip-Sync: mouth physically opens & closes with speech syllables & volume
+            // 1. Real 3D Mouth Lip-Sync driven by Gemini Live audio RMS + syllable cadence
             val mouthAperture = if (isSpeaking) {
-                val syllablePulse = (sin(speechSyllableCycle) + 1f) * 0.5f // 0.0 to 1.0
-                val volumeBoost = (rmsDb.coerceIn(0f, 15f) / 15f) * 0.35f
-                ((syllablePulse * 0.80f) + volumeBoost).coerceIn(0.12f, 1.0f)
+                val syllablePulse = (sin(speechSyllableCycle) + 1f) * 0.5f
+                val normalizedRms = (rmsDb.coerceIn(0f, 15f) / 15f)
+                val rawAperture = if (normalizedRms > 0.05f) {
+                    (normalizedRms * 0.72f) + (syllablePulse * 0.35f)
+                } else {
+                    syllablePulse * 0.75f
+                }
+                (rawAperture * rigConfig.lipSyncIntensity).coerceIn(0.10f, 1.0f)
             } else {
                 0f
             }
 
-            // 2. Real 3D Hand to Chin Gesture: right hand raises near chin when speaking or reasoning
+            // 2. Real 3D Hand Gesture
             val handToChin = if (isSpeaking) {
-                // Dignified hand gesture near chin, gently gesturing with speech cadence
                 val nodCycle = sin(speechNodCycle) * 0.12f
-                (0.88f + nodCycle).coerceIn(0.70f, 1.0f)
+                ((0.86f + nodCycle) * rigConfig.gestureIntensity).coerceIn(0f, 1.0f)
             } else if (isThinking) {
-                // Contemplative hand resting thoughtfully near chin
-                0.82f
+                (0.80f * rigConfig.gestureIntensity).coerceIn(0f, 1.0f)
             } else {
-                // Resting comfortably
                 0f
             }
 
-            // Apply 3D Morph Weights directly to mesh vertices on GPU
             try {
                 node.setMorphWeights(floatArrayOf(mouthAperture, handToChin), 0)
                 node.renderableNodes.forEach { rNode ->
@@ -237,8 +265,7 @@ fun RamsesAvatar3DView(
                 }
             } catch (_: Exception) {}
 
-            // Stable dignified posture: gentle royal stance, NO harsh shaking
-            val speechForwardTilt = if (isSpeaking) 0.8f else 0f
+            val speechForwardTilt = if (isSpeaking) 0.9f * rigConfig.gestureIntensity.coerceAtMost(1.3f) else 0f
             val totalY = (baseRotationY + idleSwayY) % 360f
 
             node.rotation = Rotation(x = speechForwardTilt, y = totalY, z = 0f)
@@ -250,6 +277,7 @@ fun RamsesAvatar3DView(
     val containerModifier = if (showBackgroundGradient) {
         modifier
             .fillMaxWidth()
+            .graphicsLayer { clip = true }
             .clip(RoundedCornerShape(bottomStart = 24.dp, bottomEnd = 24.dp))
             .background(
                 brush = Brush.verticalGradient(
@@ -262,12 +290,14 @@ fun RamsesAvatar3DView(
                 )
             )
     } else {
-        modifier.fillMaxWidth()
+        modifier
+            .fillMaxWidth()
+            .graphicsLayer { clip = true }
     }
 
-    Box(
-        modifier = containerModifier
-    ) {
+    val jawJoint = rigConfig.findJoint("jaw_mouth")
+
+    Box(modifier = containerModifier) {
         // 1. The 3D Filament SceneView
         Scene(
             modifier = Modifier.fillMaxSize(),
@@ -277,30 +307,90 @@ fun RamsesAvatar3DView(
             childNodes = childNodes
         )
 
-        // 2. Real-time Lipsync / Phonetic Acoustic Waves radiating from King Ramses's mouth area
-        if (isSpeaking) {
-            Canvas(
-                modifier = Modifier.fillMaxSize()
-            ) {
-                // Model is centered; mouth is at approximately 35% height and 50% width
-                val mouthCenter = Offset(size.width * 0.50f, size.height * 0.35f)
-                val baseAperture = (sin(speechSyllableCycle) + 1f) * 0.5f // 0.0 to 1.0
-                val volumeBoost = (rmsDb.coerceIn(0f, 15f) / 15f) * 22f
+        // 2. Live Rig Skeleton Bone Lines Overlay ("خطوط الـ Rig") if enabled by user
+        if (rigConfig.showSkeletonLinesOnAvatar) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val w = size.width
+                val h = size.height
+                val breathDeltaY = sin(breathingPhase) * 3.5f
+                val jawDeltaY = if (isSpeaking) {
+                    val pulse = (sin(speechSyllableCycle) + 1f) * 0.5f
+                    (pulse * 7f + (rmsDb.coerceIn(0f, 15f) / 15f) * 6f) * rigConfig.lipSyncIntensity
+                } else 0f
+                val handDeltaY = if (isSpeaking) -sin(speechNodCycle) * 10f * rigConfig.gestureIntensity else 0f
 
-                // Concentric royal golden sound ripples around lips/chin
-                for (step in 1..4) {
-                    val rippleRadius = (20f * step) + (baseAperture * 22f) + volumeBoost
-                    val alpha = ((5 - step) / 5f) * (0.40f + (baseAperture * 0.35f))
+                fun animatedPoint(id: String): Offset? {
+                    val j = rigConfig.joints.firstOrNull { it.id == id } ?: return null
+                    val dy = when (id) {
+                        "jaw_mouth" -> jawDeltaY + breathDeltaY * 0.5f
+                        "hand_r" -> handDeltaY + breathDeltaY
+                        "elbow_r" -> handDeltaY * 0.45f + breathDeltaY
+                        "pelvis_root" -> 0f
+                        else -> breathDeltaY
+                    }
+                    return Offset(j.x * w, (j.y * h) + dy)
+                }
 
-                    drawCircle(
-                        color = RoyalGold.copy(alpha = alpha),
-                        radius = rippleRadius,
-                        center = mouthCenter,
-                        style = Stroke(width = 2.5f)
+                for ((fromId, toId) in AvatarRigConfig.BONE_CONNECTIONS) {
+                    val p1 = animatedPoint(fromId) ?: continue
+                    val p2 = animatedPoint(toId) ?: continue
+                    drawLine(
+                        color = EgyptianCyan.copy(alpha = 0.30f),
+                        start = p1,
+                        end = p2,
+                        strokeWidth = 7f,
+                        cap = StrokeCap.Round
+                    )
+                    drawLine(
+                        brush = Brush.linearGradient(
+                            colors = listOf(RoyalGoldLight, EgyptianCyan),
+                            start = p1,
+                            end = p2
+                        ),
+                        start = p1,
+                        end = p2,
+                        strokeWidth = 3f,
+                        cap = StrokeCap.Round
                     )
                 }
 
-                // Golden speech glow dot at center of mouth
+                for (j in rigConfig.joints) {
+                    val pt = animatedPoint(j.id) ?: continue
+                    drawCircle(
+                        color = if (j.id == "jaw_mouth") RoyalGoldLight else EgyptianCyan,
+                        radius = if (j.id == "jaw_mouth") 6.5f else 5f,
+                        center = pt
+                    )
+                    drawCircle(
+                        color = PharaonicMidnight,
+                        radius = 2.2f,
+                        center = pt
+                    )
+                }
+            }
+        }
+
+        // 3. Real-time Lipsync Acoustic Waves radiating from the configured Jaw/Mouth Rig Joint
+        if (isSpeaking) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val mouthX = jawJoint?.x ?: 0.50f
+                val mouthY = jawJoint?.y ?: 0.35f
+                val mouthCenter = Offset(size.width * mouthX, size.height * mouthY)
+                val baseAperture = (sin(speechSyllableCycle) + 1f) * 0.5f
+                val volumeBoost = (rmsDb.coerceIn(0f, 15f) / 15f) * 24f
+
+                for (step in 1..4) {
+                    val rippleRadius = (18f * step) + (baseAperture * 20f) + volumeBoost
+                    val alpha = ((5 - step) / 5f) * (0.38f + (baseAperture * 0.35f))
+
+                    drawCircle(
+                        color = RoyalGold.copy(alpha = alpha.coerceIn(0f, 1f)),
+                        radius = rippleRadius,
+                        center = mouthCenter,
+                        style = Stroke(width = 2.4f)
+                    )
+                }
+
                 drawCircle(
                     brush = Brush.radialGradient(
                         colors = listOf(
@@ -309,11 +399,43 @@ fun RamsesAvatar3DView(
                             Color.Transparent
                         ),
                         center = mouthCenter,
-                        radius = 32f + (baseAperture * 18f)
+                        radius = 30f + (baseAperture * 18f) + (volumeBoost * 0.5f)
                     ),
-                    radius = 32f + (baseAperture * 18f),
+                    radius = 30f + (baseAperture * 18f) + (volumeBoost * 0.5f),
                     center = mouthCenter
                 )
+            }
+        }
+
+        // 4. Quick Rig Studio & .GLB File Import Shortcut Pill
+        if (onOpenRigStudio != null) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(10.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(Color(0x99081226))
+                    .border(1.dp, RoyalGold.copy(alpha = 0.55f), RoundedCornerShape(14.dp))
+                    .clickable { onOpenRigStudio() }
+                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                    .testTag("open_rig_studio_pill")
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.AccountTree,
+                        contentDescription = null,
+                        tint = RoyalGoldLight,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Spacer(modifier = Modifier.width(5.dp))
+                    Text(
+                        text = if (appLanguage == AppLanguage.ARABIC) "الـ Rig + ملف 3D" else "Rig + .GLB",
+                        fontFamily = AmiriFontFamily,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 11.sp,
+                        color = RoyalGoldLight
+                    )
+                }
             }
         }
 

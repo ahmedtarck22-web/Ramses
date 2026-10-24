@@ -22,6 +22,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.AddComment
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.ChatBubbleOutline
@@ -140,6 +141,7 @@ fun SideMenuDrawer(
     onOpenAuthDialog: () -> Unit,
     onOpenApiKeyDialog: () -> Unit,
     onOpenRagDialog: () -> Unit,
+    onOpenRigStudioDialog: () -> Unit = {},
     onOpen3DArtifactsDialog: () -> Unit,
     onNewChatClick: () -> Unit,
     onVoiceCallClick: () -> Unit,
@@ -451,6 +453,28 @@ fun SideMenuDrawer(
                     onCloseDrawer()
                     onVoiceCallClick()
                 }
+            )
+
+            DrawerMenuItem(
+                icon = Icons.Default.AccountTree,
+                title = if (appLanguage == AppLanguage.ARABIC) "استوديو الـ Rig وإضافة مجسمات (.glb)" else "3D Rig Studio & .GLB Import",
+                subtitle = if (appLanguage == AppLanguage.ARABIC) "وضع خطوط ومفاصل الـ Rig ورفع ملفات 3D" else "Place bone lines & import custom 3D files",
+                onClick = {
+                    onCloseDrawer()
+                    onOpenRigStudioDialog()
+                },
+                modifier = Modifier.testTag("drawer_rig_studio_item")
+            )
+
+            DrawerMenuItem(
+                icon = Icons.Default.Description,
+                title = if (appLanguage == AppLanguage.ARABIC) "قاعدة المعرفة ورفع الملفات (RAG)" else "Knowledge Base & File Upload",
+                subtitle = if (appLanguage == AppLanguage.ARABIC) "إضافة ملفات نصية ووثائق خاصة لرمسيس" else "Upload custom text & data files",
+                onClick = {
+                    onCloseDrawer()
+                    onOpenRagDialog()
+                },
+                modifier = Modifier.testTag("drawer_rag_files_item")
             )
 
             DrawerMenuItem(

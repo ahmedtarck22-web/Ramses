@@ -52,7 +52,7 @@ import com.example.ui.theme.TextSecondary
 fun RamsesHeader(
     hasPersonalApiKey: Boolean,
     appLanguage: AppLanguage = AppLanguage.ARABIC,
-    selectedModelName: String = "gemini-2.0-flash",
+    selectedModelName: String = "gemini-3.1-flash-lite",
     onModelClick: () -> Unit = {},
     onToggleLanguage: () -> Unit,
     onProfileClick: () -> Unit,

@@ -77,4 +77,42 @@ class ExampleUnitTest {
         assertEquals("USER", m1.sender)
         assertEquals("RAMSES", m2.sender)
     }
+
+    @Test
+    fun testFastModelResolutionAndLiveModels() {
+        assertEquals(
+            "gemini-3.1-flash-lite",
+            com.example.data.api.GeminiApiClient.resolveActiveModelName("gemini-2.0-flash")
+        )
+        assertEquals(
+            "gemini-3.5-flash",
+            com.example.data.api.GeminiApiClient.resolveActiveModelName("gemini-1.5-pro")
+        )
+        assertTrue(
+            com.example.service.GeminiLiveWebSocketClient.LIVE_CANDIDATE_MODELS.contains(
+                "models/gemini-3.1-flash-live-preview"
+            )
+        )
+    }
+
+    @Test
+    fun testAvatarRigConfigSerialization() {
+        val original = com.example.data.model.AvatarRigConfig(
+            customModelPath = "/data/user/0/com.example/files/custom_models/pharaoh.glb",
+            customModelName = "pharaoh.glb",
+            showSkeletonLinesOnAvatar = true,
+            lipSyncIntensity = 1.35f,
+            modelRotationY = 0f,
+            modelScale = 0.72f
+        )
+        val json = original.toJsonString()
+        val restored = com.example.data.model.AvatarRigConfig.fromJsonString(json)
+        assertEquals("pharaoh.glb", restored.customModelName)
+        assertTrue(restored.showSkeletonLinesOnAvatar)
+        assertEquals(0f, restored.modelRotationY, 0.01f)
+        assertEquals(0.72f, restored.modelScale, 0.01f)
+        assertEquals(11, restored.joints.size)
+        assertTrue(com.example.data.model.AvatarRigConfig.BONE_CONNECTIONS.isNotEmpty())
+    }
 }
+

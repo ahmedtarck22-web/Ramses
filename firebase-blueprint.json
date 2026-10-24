@@ -42,6 +42,71 @@
         "isError": { "type": "boolean" }
       },
       "required": ["id", "sessionId", "userId", "sender", "text"]
+    },
+    "RagBook": {
+      "title": "RagBook",
+      "description": "Metadata document for a converted PDF book stored in the Cloud Firebase RAG library",
+      "type": "object",
+      "properties": {
+        "bookId": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "isShared": { "type": "boolean" },
+        "title": { "type": "string" },
+        "author": { "type": "string" },
+        "eraCategory": { "type": "string" },
+        "summary": { "type": "string" },
+        "pageCount": { "type": "integer" },
+        "folderCount": { "type": "integer" },
+        "chunkCount": { "type": "integer" },
+        "keywords": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "FieldValue.serverTimestamp()" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "FieldValue.serverTimestamp()" }
+      },
+      "required": ["bookId", "ownerId", "isShared", "title", "author", "eraCategory", "summary", "pageCount", "folderCount", "chunkCount", "keywords", "createdAt", "updatedAt"]
+    },
+    "RagFolder": {
+      "title": "RagFolder",
+      "description": "Small thematic folder/chapter subdividing a book in the Cloud Firebase RAG library",
+      "type": "object",
+      "properties": {
+        "folderId": { "type": "string" },
+        "bookId": { "type": "string" },
+        "bookTitle": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "isShared": { "type": "boolean" },
+        "folderIndex": { "type": "integer" },
+        "folderTitle": { "type": "string" },
+        "category": { "type": "string" },
+        "pageRange": { "type": "string" },
+        "topicSummary": { "type": "string" },
+        "chunkCount": { "type": "integer" },
+        "keywords": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "FieldValue.serverTimestamp()" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "FieldValue.serverTimestamp()" }
+      },
+      "required": ["folderId", "bookId", "bookTitle", "ownerId", "isShared", "folderIndex", "folderTitle", "category", "pageRange", "topicSummary", "chunkCount", "keywords", "createdAt", "updatedAt"]
+    },
+    "RagChunk": {
+      "title": "RagChunk",
+      "description": "Indexed text RAG chunk belonging to a small folder and book in Cloud Firebase",
+      "type": "object",
+      "properties": {
+        "chunkId": { "type": "string" },
+        "bookId": { "type": "string" },
+        "bookTitle": { "type": "string" },
+        "folderId": { "type": "string" },
+        "folderTitle": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "isShared": { "type": "boolean" },
+        "chunkIndex": { "type": "integer" },
+        "pageRange": { "type": "string" },
+        "title": { "type": "string" },
+        "content": { "type": "string" },
+        "keywords": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "FieldValue.serverTimestamp()" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "FieldValue.serverTimestamp()" }
+      },
+      "required": ["chunkId", "bookId", "bookTitle", "folderId", "folderTitle", "ownerId", "isShared", "chunkIndex", "pageRange", "title", "content", "keywords", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -56,6 +121,18 @@
     "/users/{userId}/sessions/{sessionId}/messages/{messageId}": {
       "schema": { "$ref": "#/entities/ChatMessage" },
       "description": "Messages belonging to a chat session"
+    },
+    "/rag_books/{bookId}": {
+      "schema": { "$ref": "#/entities/RagBook" },
+      "description": "Cloud Firebase RAG books catalog"
+    },
+    "/rag_folders/{folderId}": {
+      "schema": { "$ref": "#/entities/RagFolder" },
+      "description": "Small thematic RAG folders subdividing each book"
+    },
+    "/rag_chunks/{chunkId}": {
+      "schema": { "$ref": "#/entities/RagChunk" },
+      "description": "Indexed RAG text chunks inside each folder"
     }
   }
 }

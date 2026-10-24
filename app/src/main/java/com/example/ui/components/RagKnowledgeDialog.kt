@@ -1,6 +1,10 @@
 package com.example.ui.components
 
+import android.net.Uri
+import android.provider.OpenableColumns
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -17,13 +21,16 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -50,7 +57,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import com.example.data.model.CloudRagBook
+import com.example.data.model.CloudRagChunk
+import com.example.data.model.CloudRagFolder
+import com.example.data.model.CloudRagSyncState
+import com.example.data.model.FileSearchPipelineState
+import com.example.data.model.LinkedSearchInstance
 import com.example.data.model.RagDocument
+import com.example.data.model.SearchInstanceConfig
 import com.example.ui.theme.AmiriFontFamily
 import com.example.ui.theme.CinzelFontFamily
 import com.example.ui.theme.EgyptianCyan
@@ -67,7 +81,20 @@ fun RagKnowledgeDialog(
     onAddDocument: (title: String, content: String, category: String) -> Unit,
     onToggleDocument: (RagDocument) -> Unit,
     onDeleteDocument: (String) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    pipelineState: FileSearchPipelineState = FileSearchPipelineState.Idle,
+    linkedInstance: LinkedSearchInstance? = null,
+    searchConfig: SearchInstanceConfig = SearchInstanceConfig(),
+    onUploadPdfUris: (List<Uri>) -> Unit = {},
+    onSaveSearchConfig: (SearchInstanceConfig) -> Unit = {},
+    cloudRagBooks: List<CloudRagBook> = emptyList(),
+    cloudRagFolders: List<CloudRagFolder> = emptyList(),
+    cloudRagSyncState: CloudRagSyncState = CloudRagSyncState.Idle,
+    isUserSignedIn: Boolean = false,
+    onSignInClick: () -> Unit = {},
+    onSyncFiveBooksClick: () -> Unit = {},
+    onConvertPdfUrisToCloud: (List<Uri>) -> Unit = {},
+    onLoadFolderChunks: (String, (List<CloudRagChunk>) -> Unit) -> Unit = { _, _ -> }
 ) {
     val context = LocalContext.current
     var isAddingNew by remember { mutableStateOf(false) }
@@ -78,17 +105,49 @@ fun RagKnowledgeDialog(
 
     val activeCount = documents.count { it.isEnabled }
 
+    val textFilePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            try {
+                var fileName = "وثيقة مستوردة"
+                context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                    val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (nameIdx >= 0 && cursor.moveToFirst()) {
+                        val n = cursor.getString(nameIdx)
+                        if (!n.isNullOrBlank()) fileName = n
+                    }
+                }
+                val textContent = context.contentResolver.openInputStream(uri)?.use { stream ->
+                    stream.bufferedReader(Charsets.UTF_8).readText().take(24_000)
+                }?.trim().orEmpty()
+
+                if (textContent.isNotBlank()) {
+                    onAddDocument(fileName.substringBeforeLast("."), textContent, "ملف مرفوع")
+                    Toast.makeText(context, "تم استيراد الملف وإضافته إلى قاعدة المعرفة: $fileName", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(context, "الملف فارغ أو غير نصي", Toast.LENGTH_SHORT).show()
+                }
+            } catch (e: Exception) {
+                Toast.makeText(context, "تعذر قراءة الملف: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     Dialog(onDismissRequest = onDismiss) {
         Card(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(14.dp),
+                .heightIn(max = 680.dp)
+                .padding(10.dp),
             shape = RoundedCornerShape(26.dp),
             colors = CardDefaults.cardColors(containerColor = SurfaceCard),
             border = androidx.compose.foundation.BorderStroke(1.dp, RoyalGold.copy(alpha = 0.5f))
         ) {
             Column(
-                modifier = Modifier.padding(20.dp),
+                modifier = Modifier
+                    .verticalScroll(rememberScrollState())
+                    .padding(18.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 // Header
@@ -170,7 +229,7 @@ fun RagKnowledgeDialog(
                         )
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(
-                            text = if (isAddingNew) "إلغاء" else "إضافة وثيقة",
+                            text = if (isAddingNew) "إلغاء" else "إضافة نص",
                             fontFamily = AmiriFontFamily,
                             fontWeight = FontWeight.Bold,
                             fontSize = 12.sp
@@ -178,7 +237,65 @@ fun RagKnowledgeDialog(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(14.dp))
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Cloud Firebase Small-Folder RAG Hub (5 Indexed Books + Up to 1,000+ PDF Converter with 0 MB APK Bloat)
+                CloudFirebaseRagSection(
+                    books = cloudRagBooks,
+                    folders = cloudRagFolders,
+                    syncState = cloudRagSyncState,
+                    isUserSignedIn = isUserSignedIn,
+                    onSignInClick = onSignInClick,
+                    onSyncFiveBooksClick = onSyncFiveBooksClick,
+                    onConvertPdfUrisToCloud = onConvertPdfUrisToCloud,
+                    onLoadFolderChunks = onLoadFolderChunks
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Cloud Storage 5-PDF Upload & Vertex AI / Gemini File Search Linking Section
+                RagFileSearchSection(
+                    pipelineState = pipelineState,
+                    linkedInstance = linkedInstance,
+                    searchConfig = searchConfig,
+                    onUploadPdfUris = onUploadPdfUris,
+                    onSaveSearchConfig = onSaveSearchConfig
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Direct Document File Upload Button
+                Button(
+                    onClick = {
+                        textFilePickerLauncher.launch(
+                            arrayOf("text/*", "application/json", "text/csv", "text/markdown", "*/*")
+                        )
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF132F4C),
+                        contentColor = EgyptianCyan
+                    ),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(42.dp)
+                        .testTag("rag_upload_file_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.FileUpload,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "رفع ملف نصي من الجهاز (TXT / MD / JSON / CSV)",
+                        fontFamily = AmiriFontFamily,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
 
                 // Form to add new document
                 AnimatedVisibility(visible = isAddingNew) {
@@ -312,6 +429,15 @@ fun RagKnowledgeDialog(
                                                 fontSize = 14.sp,
                                                 color = if (doc.isEnabled) TextPrimary else TextSecondary
                                             )
+                                            if (doc.isCloudPdfBook) {
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text(
+                                                    text = "PDF•GCS",
+                                                    fontFamily = CinzelFontFamily,
+                                                    fontSize = 9.sp,
+                                                    color = EgyptianCyan
+                                                )
+                                            }
                                         }
                                         Spacer(modifier = Modifier.height(3.dp))
                                         Text(

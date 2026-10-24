@@ -4,4 +4,13 @@
     <string name="ask_ramses_placeholder">...اسأل رمسيس | Ask Rameses...</string>
     <string name="voice_call_title">مكالمة رمسيس المباشرة • Live Call</string>
     <string name="multimodal_prompt">حلل هذه القطعة الأثرية أو الوثيقة من منظورك الملكي والتاريخي</string>
+    <string name="rag_file_search_section_title">كتب PDF السحابية • Vertex AI / Gemini File Search</string>
+    <string name="rag_upload_five_pdfs_button">رفع وربط كتب PDF (حتى 5 كتب) بـ Cloud Storage و File Search</string>
+    <string name="rag_configure_search_instance">إعدادات ربط محرك البحث (Search Instance)</string>
+    <string name="rag_save_search_config">حفظ إعدادات محرك البحث</string>
+    <string name="citations_books_and_search_ar">المصادر الموثقة (الكتب والمجلدات السحابية والبحث):</string>
+    <string name="citations_books_and_search_en">Verified Sources (Cloud RAG Folders &amp; Search):</string>
+    <string name="cloud_rag_hub_title">مكتبة سحابة Firebase المقسمة لمجلدات صغيرة (RAG)</string>
+    <string name="cloud_rag_upload_pdfs_btn">تحويل ورفع كتب PDF تلقائياً لسحابة Firebase (حتى 1000 كتاب)</string>
+    <string name="cloud_rag_zero_apk_badge">0 ميجابايت زيادة في حجم التطبيق • تخزين سحابي ذكي</string>
 </resources>

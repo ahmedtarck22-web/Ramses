@@ -15,6 +15,7 @@ import com.google.firebase.auth.GoogleAuthProvider
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 
 class FirebaseAuthManager(private val context: Context) {
@@ -76,5 +77,13 @@ class FirebaseAuthManager(private val context: Context) {
 
     fun signOut() {
         auth.signOut()
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+            try {
+                CredentialManager.create(context)
+                    .clearCredentialState(androidx.credentials.ClearCredentialStateRequest())
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to clear credential state", e)
+            }
+        }
     }
 }

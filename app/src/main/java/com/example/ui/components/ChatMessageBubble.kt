@@ -404,11 +404,26 @@ fun ChatMessageBubble(
                         lineHeight = 26.sp
                     )
 
-                    // Grounding Sources (if Google Search grounding was used)
+                    // Grounding Sources (Cloud Firebase RAG small folders, File Search PDFs, and/or Google Search grounding)
                     if (message.groundingSources.isNotEmpty()) {
                         Spacer(modifier = Modifier.height(14.dp))
+                        val hasBookSource = message.groundingSources.any {
+                            it.uri.startsWith("firestore://") ||
+                                it.uri.startsWith("gs://") ||
+                                it.uri.startsWith("fileSearchStores/") ||
+                                it.uri.startsWith("projects/")
+                        }
+                        val sourcesHeader = if (hasBookSource) {
+                            if (appLanguage == com.example.data.model.AppLanguage.ARABIC) {
+                                context.getString(R.string.citations_books_and_search_ar)
+                            } else {
+                                context.getString(R.string.citations_books_and_search_en)
+                            }
+                        } else {
+                            "المصادر والتوثيق الحي (Google Search):"
+                        }
                         Text(
-                            text = "المصادر والتوثيق الحي (Google Search):",
+                            text = sourcesHeader,
                             fontFamily = AmiriFontFamily,
                             fontWeight = FontWeight.Bold,
                             fontSize = 12.sp,
@@ -420,18 +435,28 @@ fun ChatMessageBubble(
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                             verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            for (source in message.groundingSources.take(4)) {
+                            for (source in message.groundingSources.take(5)) {
+                                val isCloudBookRef = source.uri.startsWith("firestore://") ||
+                                    source.uri.startsWith("gs://") ||
+                                    source.uri.startsWith("fileSearchStores/") ||
+                                    source.uri.startsWith("projects/")
                                 Row(
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(8.dp))
                                         .background(Color(0x33102A43))
                                         .border(0.5.dp, EgyptianCyan.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
                                         .clickable {
-                                            if (source.uri.isNotBlank()) {
+                                            if (isCloudBookRef) {
+                                                Toast.makeText(
+                                                    context,
+                                                    "📚 ${source.title}",
+                                                    Toast.LENGTH_LONG
+                                                ).show()
+                                            } else if (source.uri.isNotBlank()) {
                                                 try {
                                                     val intent = Intent(Intent.ACTION_VIEW, Uri.parse(source.uri))
                                                     context.startActivity(intent)
-                                                } catch (e: Exception) {
+                                                } catch (_: Exception) {
                                                     // Ignore if no browser
                                                 }
                                             }
@@ -447,7 +472,7 @@ fun ChatMessageBubble(
                                     )
                                     Spacer(modifier = Modifier.width(4.dp))
                                     Text(
-                                        text = source.title.take(30),
+                                        text = source.title.take(52),
                                         fontFamily = AmiriFontFamily,
                                         fontSize = 11.sp,
                                         color = TextSecondary

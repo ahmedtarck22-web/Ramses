@@ -60,8 +60,8 @@ open class GeminiPromptViewModel(
 ) : ViewModel() {
 
     companion object {
-        const val DEFAULT_MODEL = "gemini-3.8-flash"
-        const val FALLBACK_MODEL = "gemini-3.5-flash-lite"
+        const val DEFAULT_MODEL = "gemini-3.1-flash-lite"
+        const val FALLBACK_MODEL = "gemini-3-flash-preview"
         private const val BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
 
         private fun defaultOkHttpClient(): OkHttpClient {
@@ -231,8 +231,9 @@ open class GeminiPromptViewModel(
         model: String
     ): String = withContext(ioDispatcher) {
         val targetModel = when (model) {
-            "gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.0-flash-lite", "gemini-1.5-pro", "gemini-2.5-flash" -> "gemini-3.8-flash"
-            else -> if (model.isNotBlank()) model else "gemini-3.8-flash"
+            "gemini-1.5-pro" -> "gemini-3.5-flash"
+            "gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.0-flash-lite", "gemini-2.5-flash" -> "gemini-3.1-flash-lite"
+            else -> if (model.isNotBlank()) model else "gemini-3.1-flash-lite"
         }
         val endpointUrl = "$BASE_URL/$targetModel:generateContent?key=$apiKey"
 

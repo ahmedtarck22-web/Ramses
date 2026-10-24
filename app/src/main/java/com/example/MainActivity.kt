@@ -86,11 +86,13 @@ import com.example.ui.components.AuthSignInDialog
 import com.example.ui.components.ChatMessageBubble
 import com.example.ui.components.GeminiLiveVoiceScreen
 import com.example.ui.components.LiquidGlassBackground
+import com.example.service.GeminiLiveWebSocketClient
 import com.example.ui.components.RagKnowledgeDialog
 import com.example.ui.components.Ramses3DArtifactDialog
 import com.example.ui.components.RamsesAvatar3DView
 import com.example.ui.components.RamsesHeader
 import com.example.ui.components.RamsesInputBar
+import com.example.ui.components.RiggingStudioDialog
 import com.example.ui.components.SideMenuDrawer
 import com.example.ui.theme.AmiriFontFamily
 import com.example.ui.theme.CinzelFontFamily
@@ -142,19 +144,31 @@ fun RamsesApp(viewModel: RamsesViewModel) {
     val isGeminiLiveActive by viewModel.isGeminiLiveActive.collectAsStateWithLifecycle()
     val voiceCallState by viewModel.voiceCallState.collectAsStateWithLifecycle()
     val currentVoiceTranscript by viewModel.currentVoiceTranscript.collectAsStateWithLifecycle()
+    val liveModelSpeechTranscript by viewModel.liveModelSpeechTranscript.collectAsStateWithLifecycle()
+    val liveConnectionStatus by viewModel.liveConnectionStatus.collectAsStateWithLifecycle()
+    val isLiveMicMuted by viewModel.isLiveMicMuted.collectAsStateWithLifecycle()
+    val isLiveSpeakerMuted by viewModel.isLiveSpeakerMuted.collectAsStateWithLifecycle()
     val isVoiceTyping by viewModel.isVoiceTyping.collectAsStateWithLifecycle()
-    val liveRmsDb by viewModel.speechHelper.rmsDb.collectAsStateWithLifecycle()
+    val liveRmsDb by viewModel.combinedRmsDb.collectAsStateWithLifecycle()
     val streamingMessage by viewModel.streamingMessage.collectAsStateWithLifecycle()
     val is3DViewMode by viewModel.is3DViewMode.collectAsStateWithLifecycle()
     val isSpeaking by viewModel.isSpeaking.collectAsStateWithLifecycle()
     val isAutoSpeakEnabled by viewModel.isAutoSpeakEnabled.collectAsStateWithLifecycle()
     val selectedModel by viewModel.selectedModel.collectAsStateWithLifecycle()
     val selectedGem by viewModel.selectedGem.collectAsStateWithLifecycle()
+    val avatarRigConfig by viewModel.avatarRigConfig.collectAsStateWithLifecycle()
+    val fileSearchPipelineState by viewModel.fileSearchPipelineState.collectAsStateWithLifecycle()
+    val linkedSearchInstance by viewModel.linkedSearchInstance.collectAsStateWithLifecycle()
+    val searchInstanceConfig by viewModel.searchInstanceConfig.collectAsStateWithLifecycle()
+    val cloudRagBooks by viewModel.cloudRagBooks.collectAsStateWithLifecycle()
+    val cloudRagFolders by viewModel.cloudRagFolders.collectAsStateWithLifecycle()
+    val cloudRagSyncState by viewModel.cloudRagSyncState.collectAsStateWithLifecycle()
 
     var inputText by remember { mutableStateOf("") }
     var showAuthDialog by remember { mutableStateOf(false) }
     var showApiKeyDialog by remember { mutableStateOf(false) }
     var showRagDialog by remember { mutableStateOf(false) }
+    var showRigStudioDialog by remember { mutableStateOf(false) }
     var show3DArtifactsDialog by remember { mutableStateOf(false) }
     var showModelSelectorDialog by remember { mutableStateOf(false) }
 
@@ -236,6 +250,7 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                     onOpenAuthDialog = { showAuthDialog = true },
                     onOpenApiKeyDialog = { showApiKeyDialog = true },
                     onOpenRagDialog = { showRagDialog = true },
+                    onOpenRigStudioDialog = { showRigStudioDialog = true },
                     onOpen3DArtifactsDialog = { show3DArtifactsDialog = true },
                     onNewChatClick = { viewModel.startNewSession() },
                     onVoiceCallClick = {
@@ -352,6 +367,8 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                                     isThinking = isLoading,
                                     rmsDb = liveRmsDb,
                                     appLanguage = appLanguage,
+                                    rigConfig = avatarRigConfig,
+                                    onOpenRigStudio = { showRigStudioDialog = true },
                                     onStopSpeaking = { viewModel.stopSpeaking() },
                                     onToggleAutoSpeak = { viewModel.toggleAutoSpeak() },
                                     isAutoSpeakEnabled = isAutoSpeakEnabled
@@ -678,7 +695,7 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                                             text = if (customApiKey.isNotBlank()) {
                                                 if (appLanguage == AppLanguage.ARABIC) "مفتاح AI Studio الشخصي نشط (1.5M Token)" else "Personal AI Studio Key Active (1.5M Tokens)"
                                             } else {
-                                                if (appLanguage == AppLanguage.ARABIC) "استجابة فائقة السرعة بـ Gemini 3.8 Flash • 1.5M Token" else "Ultra-Fast with Gemini 3.8 Flash • 1.5M Tokens"
+                                                if (appLanguage == AppLanguage.ARABIC) "استجابة لحظية فائقة السرعة • Gemini 3.1 Flash Lite" else "Sub-Second Speed • Gemini 3.1 Flash Lite"
                                             },
                                             fontFamily = AmiriFontFamily,
                                             fontSize = 11.sp,
@@ -762,9 +779,10 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                 }
             }
 
-            // Gemini Live Voice Screen (Triggered by Sparkle button)
+            // Real Full-Duplex Gemini Live Voice Screen (BidiGenerateContent WebSocket)
             if (isGeminiLiveActive) {
-                val liveSpeech = streamingMessage?.text?.takeIf { it.isNotBlank() }
+                val liveSpeech = liveModelSpeechTranscript.takeIf { it.isNotBlank() }
+                    ?: streamingMessage?.text?.takeIf { it.isNotBlank() }
                     ?: messages.lastOrNull { it.sender == com.example.data.model.MessageSender.RAMSES }?.text
                     ?: ""
 
@@ -774,11 +792,18 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                     lastRamsesSpeech = liveSpeech,
                     rmsDb = liveRmsDb,
                     appLanguage = appLanguage,
+                    rigConfig = avatarRigConfig,
+                    isNativeLiveConnected = liveConnectionStatus == GeminiLiveWebSocketClient.LiveConnectionStatus.CONNECTED,
+                    isConnectingLive = liveConnectionStatus == GeminiLiveWebSocketClient.LiveConnectionStatus.CONNECTING,
+                    isMicMuted = isLiveMicMuted,
+                    isSpeakerMuted = isLiveSpeakerMuted,
+                    onToggleMicMute = { viewModel.toggleLiveMicMute() },
+                    onToggleSpeakerMute = { viewModel.toggleLiveSpeakerMute() },
                     onToggleLanguage = { viewModel.toggleLanguage() },
                     onStartListening = { viewModel.startListeningForGeminiLive() },
                     onStopListening = { viewModel.stopListeningForGeminiLive() },
                     onStopSpeaking = { viewModel.stopSpeaking() },
-                    onQuickPromptClick = { prompt -> viewModel.sendMessage(prompt, isVoice = true) },
+                    onQuickPromptClick = { prompt -> viewModel.sendLiveVoicePrompt(prompt) },
                     onEndCall = { viewModel.endGeminiLiveCall() }
                 )
             }
@@ -840,7 +865,49 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                     onDeleteDocument = { id ->
                         viewModel.deleteRagDocument(id)
                     },
-                    onDismiss = { showRagDialog = false }
+                    onDismiss = { showRagDialog = false },
+                    pipelineState = fileSearchPipelineState,
+                    linkedInstance = linkedSearchInstance,
+                    searchConfig = searchInstanceConfig,
+                    onUploadPdfUris = { uris ->
+                        viewModel.uploadPdfBooksToCloudAndLink(uris) { _, msg ->
+                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    onSaveSearchConfig = { updatedCfg ->
+                        viewModel.updateSearchInstanceConfig(updatedCfg)
+                    },
+                    cloudRagBooks = cloudRagBooks,
+                    cloudRagFolders = cloudRagFolders,
+                    cloudRagSyncState = cloudRagSyncState,
+                    isUserSignedIn = userProfile.isSignedIn,
+                    onSignInClick = {
+                        showRagDialog = false
+                        showAuthDialog = true
+                    },
+                    onSyncFiveBooksClick = {
+                        viewModel.syncFiveBooksToCloudFirebase()
+                    },
+                    onConvertPdfUrisToCloud = { uris ->
+                        viewModel.convertAndUploadPdfsToCloudFirebase(uris) { _, msg ->
+                            Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                        }
+                    },
+                    onLoadFolderChunks = { folderId, callback ->
+                        viewModel.loadChunksForFolderPreview(folderId, callback)
+                    }
+                )
+            }
+
+            // 3D Rigging Studio & Custom .GLB File Importer Dialog
+            if (showRigStudioDialog) {
+                RiggingStudioDialog(
+                    initialConfig = avatarRigConfig,
+                    appLanguage = appLanguage,
+                    onSaveConfig = { updatedRig ->
+                        viewModel.saveAvatarRigConfig(updatedRig)
+                    },
+                    onDismiss = { showRigStudioDialog = false }
                 )
             }
 
@@ -855,7 +922,7 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                 )
             }
 
-            // Google Gemini Model Selector Dialog (Flash 2.0 vs Pro 1.5)
+            // Google Gemini Model Selector Dialog (3.1 Flash Lite vs 3.8 Flash)
             if (showModelSelectorDialog) {
                 androidx.compose.ui.window.Dialog(
                     onDismissRequest = { showModelSelectorDialog = false }
@@ -904,16 +971,16 @@ fun RamsesApp(viewModel: RamsesViewModel) {
 
                             Spacer(modifier = Modifier.height(16.dp))
 
-                            // Option 1: Gemini 2.0 Flash
-                            val is20Flash = selectedModel.contains("2.0", ignoreCase = true) || !selectedModel.contains("pro", ignoreCase = true)
+                            // Option 1: Gemini 3.1 Flash Lite (Sub-second ~0.5s TTFT)
+                            val isFastFlash = selectedModel != "gemini-3.8-flash"
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(16.dp))
-                                    .background(if (is20Flash) Color(0x334285F4) else Color(0xFF282A2C))
-                                    .border(1.dp, if (is20Flash) Color(0xFF8AB4F8) else Color(0xFF3C4043), RoundedCornerShape(16.dp))
+                                    .background(if (isFastFlash) Color(0x334285F4) else Color(0xFF282A2C))
+                                    .border(1.dp, if (isFastFlash) Color(0xFF8AB4F8) else Color(0xFF3C4043), RoundedCornerShape(16.dp))
                                     .clickable {
-                                        viewModel.selectModel("gemini-2.0-flash")
+                                        viewModel.selectModel("gemini-3.1-flash-lite")
                                         showModelSelectorDialog = false
                                     }
                                     .padding(14.dp)
@@ -925,7 +992,7 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Text(
-                                            text = "Gemini 2.0 Flash",
+                                            text = "Gemini 3.1 Flash Lite",
                                             fontFamily = CinzelFontFamily,
                                             fontWeight = FontWeight.Bold,
                                             fontSize = 15.sp,
@@ -951,16 +1018,16 @@ fun RamsesApp(viewModel: RamsesViewModel) {
 
                             Spacer(modifier = Modifier.height(10.dp))
 
-                            // Option 2: Gemini 1.5 Pro
-                            val is15Pro = selectedModel.contains("pro", ignoreCase = true)
+                            // Option 2: Gemini 3.8 Flash
+                            val is38Flash = selectedModel == "gemini-3.8-flash"
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clip(RoundedCornerShape(16.dp))
-                                    .background(if (is15Pro) Color(0x334285F4) else Color(0xFF282A2C))
-                                    .border(1.dp, if (is15Pro) Color(0xFF8AB4F8) else Color(0xFF3C4043), RoundedCornerShape(16.dp))
+                                    .background(if (is38Flash) Color(0x334285F4) else Color(0xFF282A2C))
+                                    .border(1.dp, if (is38Flash) Color(0xFF8AB4F8) else Color(0xFF3C4043), RoundedCornerShape(16.dp))
                                     .clickable {
-                                        viewModel.selectModel("gemini-1.5-pro")
+                                        viewModel.selectModel("gemini-3.8-flash")
                                         showModelSelectorDialog = false
                                     }
                                     .padding(14.dp)
@@ -972,14 +1039,14 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Text(
-                                            text = "Gemini 1.5 Pro",
+                                            text = "Gemini 3.8 Flash",
                                             fontFamily = CinzelFontFamily,
                                             fontWeight = FontWeight.Bold,
                                             fontSize = 15.sp,
                                             color = Color.White
                                         )
                                         Text(
-                                            text = if (appLanguage == AppLanguage.ARABIC) "تفكير عميق" else "Deep Reasoning",
+                                            text = if (appLanguage == AppLanguage.ARABIC) "تفكير عميق • Firebase AI" else "Deep Reasoning • Firebase AI",
                                             fontFamily = AmiriFontFamily,
                                             fontSize = 11.sp,
                                             color = Color(0xFFF59E0B)
@@ -987,7 +1054,7 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                                     }
                                     Spacer(modifier = Modifier.height(4.dp))
                                     Text(
-                                        text = if (appLanguage == AppLanguage.ARABIC) "الأفضل في تحليل الأكواد المعقدة، التفكير المنطقي المتسلسل، والبحوث الطويلة." else "Best for complex code analysis, multi-step logic, and detailed research.",
+                                        text = if (appLanguage == AppLanguage.ARABIC) "الأفضل في التحليل التاريخي العميق، فهرسة كتب الـ RAG السحابية، والبحوث المفصلة." else "Best for deep Egyptology synthesis, Cloud Firebase RAG analysis, and detailed research.",
                                         fontFamily = AmiriFontFamily,
                                         fontSize = 12.sp,
                                         color = TextSecondary,

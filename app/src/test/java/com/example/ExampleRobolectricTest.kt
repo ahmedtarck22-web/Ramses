@@ -104,5 +104,142 @@ class ExampleRobolectricTest {
     liveClient.interruptModelSpeech()
     assertFalse(liveClient.isEchoGateActive(nowElapsedMs = 3_000L))
   }
+
+  @Test
+  fun `SecureKeyStoreHelper encrypts secrets with AES-GCM and migrates legacy cleartext preferences`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val prefs = context.getSharedPreferences("test_secure_keystore_prefs", Context.MODE_PRIVATE)
+    prefs.edit().clear().commit()
+
+    // Seed a simulated legacy cleartext key and verify automatic migration removes cleartext
+    val sampleSecret = "AIzaSySimulatedUnitTestKey_1234567890"
+    prefs.edit().putString("custom_api_key", sampleSecret).commit()
+
+    val migratedRead = com.example.security.SecureKeyStoreHelper.readEncryptedPref(
+      prefs = prefs,
+      encryptedKey = "custom_api_key_enc_v1",
+      legacyPlainKey = "custom_api_key"
+    )
+    assertEquals(sampleSecret, migratedRead)
+    assertFalse("Legacy cleartext key must be deleted after migration", prefs.contains("custom_api_key"))
+
+    val storedCipher = prefs.getString("custom_api_key_enc_v1", null).orEmpty()
+    assertTrue("Encrypted payload must be non-empty iv:ciphertext", storedCipher.contains(":"))
+    assertFalse("Stored ciphertext must never contain raw secret", storedCipher.contains(sampleSecret))
+
+    // Subsequent read decrypts cleanly from ciphertext
+    val secondRead = com.example.security.SecureKeyStoreHelper.readEncryptedPref(
+      prefs = prefs,
+      encryptedKey = "custom_api_key_enc_v1",
+      legacyPlainKey = "custom_api_key"
+    )
+    assertEquals(sampleSecret, secondRead)
+  }
+
+  @Test
+  fun `two-stage RAG retrieval returns accurate cited passages from bundled five books`() = kotlinx.coroutines.runBlocking {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val fakeDb = createLocalTestFirestore(context)
+    val repo = FirestoreRagRepository(
+      db = fakeDb,
+      appContext = context,
+      authProvider = { null }
+    )
+
+    val kadeshPassages = repo.retrieveRelevantPassages("ما تفاصيل معركة قادش ومعاهدة السلام مع الحيثيين؟")
+    assertTrue("Expected relevant passages for Battle of Kadesh", kadeshPassages.isNotEmpty())
+    val topCitationTitle = kadeshPassages.first().toCitationTitle()
+    val topCitationUri = kadeshPassages.first().toCitationUri()
+    assertTrue(topCitationTitle.contains("•"))
+    assertTrue(topCitationUri.startsWith("firestore://rag_books/"))
+
+    // Verify GeminiApiClient preserves exact RAG citations without duplicates
+    val client = GeminiApiClient()
+    val ragDocs = kadeshPassages.map { p ->
+      com.example.data.model.RagDocument(
+        id = "cloud_chunk_${p.chunk.chunkId}",
+        title = p.toCitationTitle(),
+        content = p.chunk.content,
+        gcsUri = p.toCitationUri()
+      )
+    }
+    val citations = client.buildRagContextCitations(ragDocs + ragDocs)
+    assertEquals(kadeshPassages.size, citations.size)
+    assertEquals(topCitationTitle, citations.first().title)
+    assertEquals(topCitationUri, citations.first().uri)
+  }
+
+  @Test
+  fun `multimodal image request downsamples oversized bitmap and encodes inlineData JPEG`() {
+    val client = GeminiApiClient()
+    val oversizedBitmap = android.graphics.Bitmap.createBitmap(
+      2048,
+      1536,
+      android.graphics.Bitmap.Config.ARGB_8888
+    )
+    val bodyJson = JSONObject(
+      client.buildRequestBody(
+        prompt = "حلل هذا النقش الهيروغليفي",
+        history = emptyList(),
+        imageBitmap = oversizedBitmap,
+        withSearch = false,
+        isVoiceCall = false,
+        ragContext = emptyList(),
+        appLanguage = AppLanguage.ARABIC,
+        gemPersona = "RAMSES"
+      )
+    )
+    val parts = bodyJson.getJSONArray("contents").getJSONObject(0).getJSONArray("parts")
+    var foundInlineJpeg = false
+    for (i in 0 until parts.length()) {
+      val inline = parts.getJSONObject(i).optJSONObject("inlineData")
+      if (inline != null) {
+        assertEquals("image/jpeg", inline.getString("mimeType"))
+        assertTrue(inline.getString("data").length > 32)
+        foundInlineJpeg = true
+      }
+    }
+    assertTrue("Expected inlineData JPEG part in multimodal request", foundInlineJpeg)
+  }
+
+  @Test
+  fun `all bundled 3D GLB avatar and artifact models have valid glTF 2 binary headers and lengths`() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val glbPaths = listOf(
+      "models/Ramses.final.glb",
+      "models/Ramses.original.glb"
+    ) + com.example.data.model.RamsesArtifact.ALL_ARTIFACTS.map { it.modelPath }
+
+    assertEquals(7, glbPaths.distinct().size)
+
+    for (assetPath in glbPaths.distinct()) {
+      val bytes = context.assets.open(assetPath).use { it.readBytes() }
+      assertTrue("GLB asset $assetPath is unexpectedly tiny", bytes.size > 128)
+      val header = java.nio.ByteBuffer.wrap(bytes, 0, 12).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+      val magic = header.int
+      val version = header.int
+      val declaredLength = header.int
+      assertEquals("Invalid glTF magic in $assetPath", 0x46546C67, magic)
+      assertEquals("Expected glTF version 2 in $assetPath", 2, version)
+      assertEquals("Declared GLB byte length mismatch in $assetPath", bytes.size, declaredLength)
+    }
+  }
+
+  private fun createLocalTestFirestore(context: Context): com.google.firebase.firestore.FirebaseFirestore {
+    if (com.google.firebase.FirebaseApp.getApps(context).isEmpty()) {
+      com.google.firebase.FirebaseApp.initializeApp(
+        context,
+        com.google.firebase.FirebaseOptions.Builder()
+          .setApplicationId("com.aistudio.ramsesai.kqzmpw")
+          .setProjectId("demo-no-project")
+          .setApiKey("fake-api-key-for-unit-test")
+          .build()
+      )
+    }
+    return com.google.firebase.firestore.FirebaseFirestore.getInstance(
+      com.google.firebase.FirebaseApp.getInstance(),
+      "demo-unit-db"
+    )
+  }
 }
 

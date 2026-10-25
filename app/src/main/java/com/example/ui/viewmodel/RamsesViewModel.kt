@@ -731,6 +731,37 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
+    fun setCloudBookShared(
+        bookId: String,
+        isShared: Boolean,
+        onFinished: (Boolean, String) -> Unit = { _, _ -> }
+    ) {
+        viewModelScope.launch {
+            val res = cloudRagRepo.setBookShared(bookId, isShared)
+            res.fold(
+                onSuccess = {
+                    onFinished(true, if (isShared) "تم تفعيل مشاركة الكتاب." else "تم إيقاف مشاركة الكتاب.")
+                },
+                onFailure = { err ->
+                    onFinished(false, err.localizedMessage ?: "تعذر تحديث صلاحيات المشاركة.")
+                }
+            )
+        }
+    }
+
+    fun deleteCloudBook(
+        bookId: String,
+        onFinished: (Boolean, String) -> Unit = { _, _ -> }
+    ) {
+        viewModelScope.launch {
+            val res = cloudRagRepo.deleteBookBundle(bookId)
+            res.fold(
+                onSuccess = { onFinished(true, "تم حذف الكتاب ومجلداته وفقراته من السحابة.") },
+                onFailure = { err -> onFinished(false, err.localizedMessage ?: "تعذر حذف الكتاب.") }
+            )
+        }
+    }
+
     // --- Session Management ---
     fun startNewSession() {
         currentMessageJob?.cancel()
@@ -930,10 +961,11 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
                 val cloudRetrievedDocs = retrievedPassages.map { passage ->
                     RagDocument(
                         id = "cloud_chunk_${passage.chunk.chunkId}",
-                        title = "${passage.chunk.bookTitle} — ${passage.chunk.folderTitle} (${passage.chunk.pageRange})",
+                        title = passage.toCitationTitle(),
                         content = passage.chunk.content,
                         category = "سحابة Firebase • ${passage.chunk.pageRange}",
-                        isEnabled = true
+                        isEnabled = true,
+                        gcsUri = passage.toCitationUri()
                     )
                 }
                 val combinedRagDocs = cloudRetrievedDocs + activeRagDocs

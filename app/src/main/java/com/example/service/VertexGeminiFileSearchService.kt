@@ -10,6 +10,7 @@ import com.example.data.model.RetrievedBookChunk
 import com.example.data.model.SearchInstanceConfig
 import com.example.data.model.SearchLinkType
 import com.example.data.model.UploadedGcsPdfBook
+import com.example.security.SecureKeyStoreHelper
 import com.google.firebase.Firebase
 import com.google.firebase.ai.ai
 import com.google.firebase.ai.type.GenerativeBackend
@@ -257,7 +258,8 @@ class VertexGeminiFileSearchService(
         okHttpClient.newCall(request).execute().use { response ->
             val body = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
-                throw IOException("Vertex AI Search documents:import failed (${response.code}): ${body.take(240)}")
+                val safeBody = SecureKeyStoreHelper.redactSecret(body.take(240), gcpAccessToken)
+                throw IOException("Vertex AI Search documents:import failed (${response.code}): $safeBody")
             }
             JSONObject(body).optString("name", "")
         }
@@ -335,7 +337,8 @@ class VertexGeminiFileSearchService(
         okHttpClient.newCall(request).execute().use { response ->
             val body = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
-                throw IOException("Failed to create Gemini FileSearchStore (${response.code}): ${body.take(240)}")
+                val safeBody = SecureKeyStoreHelper.redactSecret(body.take(240), apiKey)
+                throw IOException("Failed to create Gemini FileSearchStore (${response.code}): $safeBody")
             }
             val storeName = JSONObject(body).optString("name", "")
             if (storeName.isBlank()) {
@@ -376,8 +379,8 @@ class VertexGeminiFileSearchService(
 
         val uploadSessionUrl = okHttpClient.newCall(startRequest).execute().use { startResp ->
             if (!startResp.isSuccessful) {
-                val err = startResp.body?.string().orEmpty()
-                throw IOException("FileSearchStore upload start failed (${startResp.code}) for '${book.fileName}': ${err.take(200)}")
+                val err = SecureKeyStoreHelper.redactSecret(startResp.body?.string().orEmpty().take(200), apiKey)
+                throw IOException("FileSearchStore upload start failed (${startResp.code}) for '${book.fileName}': $err")
             }
             startResp.header("X-Goog-Upload-Url")
                 ?: startResp.header("x-goog-upload-url")
@@ -396,7 +399,8 @@ class VertexGeminiFileSearchService(
         return okHttpClient.newCall(finalizeRequest).execute().use { uploadResp ->
             val respBody = uploadResp.body?.string().orEmpty()
             if (!uploadResp.isSuccessful) {
-                throw IOException("FileSearchStore byte finalize failed (${uploadResp.code}) for '${book.fileName}': ${respBody.take(200)}")
+                val safeResp = SecureKeyStoreHelper.redactSecret(respBody.take(200), apiKey)
+                throw IOException("FileSearchStore byte finalize failed (${uploadResp.code}) for '${book.fileName}': $safeResp")
             }
             if (respBody.isBlank()) JSONObject().put("done", true) else JSONObject(respBody)
         }
@@ -420,7 +424,8 @@ class VertexGeminiFileSearchService(
             val json = okHttpClient.newCall(req).execute().use { resp ->
                 val body = resp.body?.string().orEmpty()
                 if (!resp.isSuccessful) {
-                    throw IOException("Polling FileSearch operation '$cleanOp' failed (${resp.code}): ${body.take(180)}")
+                    val safeBody = SecureKeyStoreHelper.redactSecret(body.take(180), apiKey)
+                    throw IOException("Polling FileSearch operation '$cleanOp' failed (${resp.code}): $safeBody")
                 }
                 JSONObject(body)
             }
@@ -562,7 +567,7 @@ class VertexGeminiFileSearchService(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Log.w(TAG, "REST FileSearch stream fallback to Vertex AI SDK: ${e.message}")
+                Log.w(TAG, "REST FileSearch stream fallback to Vertex AI SDK: ${SecureKeyStoreHelper.redactSecret(e.message, apiKey)}")
             }
         }
 
@@ -622,8 +627,8 @@ class VertexGeminiFileSearchService(
 
         okHttpClient.newCall(request).execute().use { response ->
             if (!response.isSuccessful) {
-                val err = response.body?.string().orEmpty()
-                throw IOException("Gemini File Search SSE failed (${response.code}): ${err.take(200)}")
+                val err = SecureKeyStoreHelper.redactSecret(response.body?.string().orEmpty().take(200), apiKey)
+                throw IOException("Gemini File Search SSE failed (${response.code}): $err")
             }
             val source = response.body?.source() ?: throw IOException("Empty SSE response stream")
             val reader = BufferedReader(InputStreamReader(source.inputStream(), Charsets.UTF_8))

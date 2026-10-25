@@ -41,7 +41,7 @@ data class CloudRagBook(
         "pageCount" to pageCount.coerceIn(0, 20000),
         "folderCount" to folderCount.coerceIn(0, 5000),
         "chunkCount" to chunkCount.coerceIn(0, 50000),
-        "keywords" to keywords.take(40).map { it.take(100) },
+        "keywords" to keywords.map { it.trim().take(100) }.filter { it.isNotEmpty() }.take(40),
         "createdAt" to FieldValue.serverTimestamp(),
         "updatedAt" to FieldValue.serverTimestamp()
     )
@@ -104,7 +104,7 @@ data class CloudRagFolder(
         "pageRange" to pageRange.take(80),
         "topicSummary" to topicSummary.ifBlank { folderTitle }.take(4000),
         "chunkCount" to chunkCount.coerceIn(0, 5000),
-        "keywords" to keywords.take(50).map { it.take(100) },
+        "keywords" to keywords.map { it.trim().take(100) }.filter { it.isNotEmpty() }.take(50),
         "createdAt" to FieldValue.serverTimestamp(),
         "updatedAt" to FieldValue.serverTimestamp()
     )
@@ -167,7 +167,7 @@ data class CloudRagChunk(
         "pageRange" to pageRange.take(80),
         "title" to title.ifBlank { folderTitle }.take(300),
         "content" to content.ifBlank { title }.take(25000),
-        "keywords" to keywords.take(40).map { it.take(100) },
+        "keywords" to keywords.map { it.trim().take(100) }.filter { it.isNotEmpty() }.take(40),
         "createdAt" to FieldValue.serverTimestamp(),
         "updatedAt" to FieldValue.serverTimestamp()
     )

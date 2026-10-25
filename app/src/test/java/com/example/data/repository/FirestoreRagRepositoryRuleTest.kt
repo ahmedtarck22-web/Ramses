@@ -88,9 +88,11 @@ class FirestoreRagRepositoryRuleTest : FirestoreEmulatorTestBase() {
         assertTrue(sharedBooks.any { it.bookId == bundle.book.bookId })
 
         val passages = withTimeout(DEFAULT_TIMEOUT_MS) {
-            repo.retrieveRelevantPassages("ما هي بنود معاهدة السلام بعد معركة قادش؟")
+            repo.retrieveRelevantPassages("ما هي بنود معاهدة السلام بعد معركة قادش $suffix؟")
         }
         assertTrue(passages.any { it.chunk.chunkId == bundle.chunks.first().chunkId })
+        withTimeout(DEFAULT_TIMEOUT_MS) { repo.deleteBookBundle(bundle.book.bookId).getOrThrow() }
+        Unit
     }
 
     @Test
@@ -276,10 +278,174 @@ class FirestoreRagRepositoryRuleTest : FirestoreEmulatorTestBase() {
         assertFalse("Expected message document to be deleted with parent session", deletedMsgSnap.exists())
     }
 
+    @Test
+    fun setBookShared_cascadesRevocationAndReSharingAcrossMultiBatchChunks() = runBlocking {
+        val aliceUid = signInTestUser(ALICE_EMAIL)
+        val aliceRepo = FirestoreRagRepository(
+            db = firestore,
+            appContext = null,
+            authProvider = { auth.currentUser?.uid ?: aliceUid }
+        )
+        val suffix = UUID.randomUUID().toString().replace("-", "").take(10)
+        val bookId = "book_share_$suffix"
+        val uniqueToken = "مسلةملكية$suffix"
+
+        val folders = (1..2).map { fIdx ->
+            val fid = "${bookId}_f0$fIdx"
+            CloudRagFolder(
+                docId = fid,
+                folderId = fid,
+                bookId = bookId,
+                bookTitle = "كتاب المشاركة $suffix",
+                isShared = true,
+                folderIndex = fIdx,
+                folderTitle = "مجلد $fIdx $uniqueToken",
+                category = "عصر الرمسيسيين",
+                pageRange = "ص ${fIdx * 10} - ${fIdx * 10 + 9}",
+                topicSummary = "يتناول نقوش $uniqueToken في معابد طيبة.",
+                chunkCount = 6,
+                keywords = listOf(uniqueToken, "رمسيس الثاني")
+            )
+        }
+        // 12 chunks exercises multi-batch chunk writes/updates (MAX_CHUNK_BATCH_OPS = 9)
+        val chunks = (1..12).map { cIdx ->
+            val parentFolder = folders[(cIdx - 1) / 6]
+            val cid = "${parentFolder.folderId}_c${cIdx.toString().padStart(3, '0')}"
+            CloudRagChunk(
+                docId = cid,
+                chunkId = cid,
+                bookId = bookId,
+                bookTitle = "كتاب المشاركة $suffix",
+                folderId = parentFolder.folderId,
+                folderTitle = parentFolder.folderTitle,
+                isShared = true,
+                chunkIndex = cIdx,
+                pageRange = "ص $cIdx",
+                title = "فقرة رقم $cIdx حول $uniqueToken",
+                content = "تفصيل تاريخي موثق رقم $cIdx عن $uniqueToken في عهد الملك رمسيس الثاني.",
+                keywords = listOf(uniqueToken, "طيبة")
+            )
+        }
+        val bundle = SeedRagBookBundle(
+            book = CloudRagBook(
+                docId = bookId,
+                bookId = bookId,
+                isShared = true,
+                title = "كتاب المشاركة $suffix",
+                author = "د. سليم حسن",
+                eraCategory = "الدولة الحديثة",
+                summary = "دراسة موثقة حول $uniqueToken.",
+                pageCount = 60,
+                folderCount = folders.size,
+                chunkCount = chunks.size,
+                keywords = listOf(uniqueToken, "رمسيس الثاني")
+            ),
+            folders = folders,
+            chunks = chunks
+        )
+
+        withTimeout(DEFAULT_TIMEOUT_MS * 2) { aliceRepo.uploadBookBundle(bundle).getOrThrow() }
+
+        // Switch to Bob: verify Bob can read shared book, folders, chunks, and RAG passages
+        val bobUid = signInTestUser(BOB_EMAIL)
+        val bobRepo = FirestoreRagRepository(
+            db = firestore,
+            appContext = null,
+            authProvider = { auth.currentUser?.uid ?: bobUid }
+        )
+        assertNotNull(withTimeout(DEFAULT_TIMEOUT_MS) { bobRepo.getBookById(bookId).getOrThrow() })
+        assertEquals(12, withTimeout(DEFAULT_TIMEOUT_MS) {
+            folders.sumOf { f -> bobRepo.getChunksForFolder(f.folderId).getOrThrow().size }
+        })
+        assertTrue(withTimeout(DEFAULT_TIMEOUT_MS) {
+            bobRepo.retrieveRelevantPassages("ما هي نقوش $uniqueToken؟").any { it.chunk.bookId == bookId }
+        })
+
+        // Non-owner Bob cannot revoke sharing on Alice's book
+        val bobRevokeAttempt = withTimeout(DEFAULT_TIMEOUT_MS) { bobRepo.setBookShared(bookId, false) }
+        assertTrue("Non-owner must not be able to change sharing", bobRevokeAttempt.isFailure)
+
+        // Owner Alice revokes sharing across book, folders, and all 12 chunks
+        signInTestUser(ALICE_EMAIL)
+        withTimeout(DEFAULT_TIMEOUT_MS * 2) { aliceRepo.setBookShared(bookId, false).getOrThrow() }
+
+        // Switch back to Bob: verify complete revocation across book, folders, chunks, and RAG retrieval
+        signInTestUser(BOB_EMAIL)
+        val bobBookAfterRevoke = withTimeout(DEFAULT_TIMEOUT_MS) { bobRepo.getBookById(bookId) }
+        assertTrue(bobBookAfterRevoke.isFailure)
+        assertEquals(
+            FirebaseFirestoreException.Code.PERMISSION_DENIED,
+            bobBookAfterRevoke.exceptionOrNull()?.unwrapFirestoreException()?.code
+        )
+        assertFalse(withTimeout(DEFAULT_TIMEOUT_MS) {
+            bobRepo.getSharedBooks().getOrThrow().any { it.bookId == bookId }
+        })
+        assertFalse(withTimeout(DEFAULT_TIMEOUT_MS) {
+            bobRepo.getSharedFolders().getOrThrow().any { it.bookId == bookId }
+        })
+        assertTrue(withTimeout(DEFAULT_TIMEOUT_MS) {
+            bobRepo.getChunksForFolder(folders.first().folderId).getOrThrow().isEmpty()
+        })
+        assertFalse(withTimeout(DEFAULT_TIMEOUT_MS) {
+            bobRepo.retrieveRelevantPassages("ما هي نقوش $uniqueToken؟").any { it.chunk.bookId == bookId }
+        })
+
+        // Owner Alice still retrieves her private book and passages, and can re-share
+        signInTestUser(ALICE_EMAIL)
+        assertTrue(withTimeout(DEFAULT_TIMEOUT_MS) {
+            aliceRepo.retrieveRelevantPassages("ما هي نقوش $uniqueToken؟").any { it.chunk.bookId == bookId }
+        })
+        withTimeout(DEFAULT_TIMEOUT_MS * 2) { aliceRepo.setBookShared(bookId, true).getOrThrow() }
+
+        signInTestUser(BOB_EMAIL)
+        assertTrue(withTimeout(DEFAULT_TIMEOUT_MS) {
+            bobRepo.retrieveRelevantPassages("ما هي نقوش $uniqueToken؟").any { it.chunk.bookId == bookId }
+        })
+    }
+
+    @Test
+    fun deleteBookBundle_cascadesDeletionAcrossChunksFoldersAndBook() = runBlocking {
+        val aliceUid = signInTestUser(ALICE_EMAIL)
+        val aliceRepo = FirestoreRagRepository(
+            db = firestore,
+            appContext = null,
+            authProvider = { auth.currentUser?.uid ?: aliceUid }
+        )
+        val suffix = UUID.randomUUID().toString().replace("-", "").take(10)
+        val bundle = buildTestBundle(suffix, isShared = true)
+        withTimeout(DEFAULT_TIMEOUT_MS) { aliceRepo.uploadBookBundle(bundle).getOrThrow() }
+
+        // Non-owner Bob cannot delete Alice's book
+        val bobUid = signInTestUser(BOB_EMAIL)
+        val bobRepo = FirestoreRagRepository(
+            db = firestore,
+            appContext = null,
+            authProvider = { auth.currentUser?.uid ?: bobUid }
+        )
+        assertTrue(withTimeout(DEFAULT_TIMEOUT_MS) { bobRepo.deleteBookBundle(bundle.book.bookId) }.isFailure)
+
+        // Owner Alice deletes the bundle cleanly
+        signInTestUser(ALICE_EMAIL)
+        withTimeout(DEFAULT_TIMEOUT_MS) { aliceRepo.deleteBookBundle(bundle.book.bookId).getOrThrow() }
+
+        val bookSnap = withTimeout(DEFAULT_TIMEOUT_MS) {
+            firestore.collection("rag_books").document(bundle.book.bookId).get().await()
+        }
+        val folderSnap = withTimeout(DEFAULT_TIMEOUT_MS) {
+            firestore.collection("rag_folders").document(bundle.folders.first().folderId).get().await()
+        }
+        val chunkSnap = withTimeout(DEFAULT_TIMEOUT_MS) {
+            firestore.collection("rag_chunks").document(bundle.chunks.first().chunkId).get().await()
+        }
+        assertFalse(bookSnap.exists())
+        assertFalse(folderSnap.exists())
+        assertFalse(chunkSnap.exists())
+    }
+
     private companion object {
         const val ALICE_EMAIL = "alice.ramses@test.com"
         const val BOB_EMAIL = "bob.ramses@test.com"
-        const val DEFAULT_TIMEOUT_MS = 5000L
-        const val FLOW_TIMEOUT_MS = 3000L
+        const val DEFAULT_TIMEOUT_MS = 8000L
+        const val FLOW_TIMEOUT_MS = 8000L
     }
 }

@@ -399,10 +399,25 @@ If you have not yet configured a personal Google AI Studio key, open the **Side 
         val offlineCitations = matchedCloudChunks.map { doc ->
             GroundingSource(
                 title = doc.title,
-                uri = "firestore://rag_chunks/${doc.id.removePrefix("cloud_chunk_")}"
+                uri = doc.gcsUri.ifBlank { "firestore://rag_chunks/${doc.id.removePrefix("cloud_chunk_")}" }
             )
-        }
+        }.distinctBy { "${it.title}|${it.uri}" }
         return GeminiResult(text = reply, groundingSources = offlineCitations, isError = false)
+    }
+
+    internal fun buildRagContextCitations(ragContext: List<RagDocument>): List<GroundingSource> {
+        return ragContext.filter { it.isEnabled }.mapNotNull { doc ->
+            when {
+                doc.isCloudPdfBook && doc.gcsUri.isNotBlank() ->
+                    GroundingSource(title = doc.title, uri = doc.gcsUri)
+                doc.id.startsWith("cloud_chunk_") ->
+                    GroundingSource(
+                        title = doc.title,
+                        uri = doc.gcsUri.ifBlank { "firestore://rag_chunks/${doc.id.removePrefix("cloud_chunk_")}" }
+                    )
+                else -> null
+            }
+        }.distinctBy { "${it.title}|${it.uri}" }
     }
 
     internal fun buildRequestBody(
@@ -635,11 +650,7 @@ If you have not yet configured a personal Google AI Studio key, open the **Side 
 
             val resultText = accumulated.toString().trim()
             if (resultText.isNotEmpty()) {
-                val pdfCitations = cloudPdfDocs.map { GroundingSource(title = it.title, uri = it.gcsUri) }
-                val chunkCitations = plainDocs.filter { it.id.startsWith("cloud_chunk_") }.map {
-                    GroundingSource(title = it.title, uri = "firestore://rag_chunks/${it.id.removePrefix("cloud_chunk_")}")
-                }
-                val citations = (pdfCitations + chunkCitations).distinctBy { "${it.title}|${it.uri}" }
+                val citations = buildRagContextCitations(enabledDocs)
                 GeminiResult(text = resultText, groundingSources = citations, isError = false)
             } else {
                 null
@@ -717,11 +728,7 @@ If you have not yet configured a personal Google AI Studio key, open the **Side 
                 generativeModel.generateContent(input)
             }
             val text = response.text?.trim()?.ifEmpty { null } ?: return null
-            val pdfCitations = cloudPdfDocs.map { GroundingSource(title = it.title, uri = it.gcsUri) }
-            val chunkCitations = plainDocs.filter { it.id.startsWith("cloud_chunk_") }.map {
-                GroundingSource(title = it.title, uri = "firestore://rag_chunks/${it.id.removePrefix("cloud_chunk_")}")
-            }
-            val citations = (pdfCitations + chunkCitations).distinctBy { "${it.title}|${it.uri}" }
+            val citations = buildRagContextCitations(enabledDocs)
             GeminiResult(text = text, groundingSources = citations, isError = false)
         } catch (e: CancellationException) {
             throw e
@@ -791,12 +798,14 @@ If you have not yet configured a personal Google AI Studio key, open the **Side 
                     okHttpClient.newCall(httpRequest).execute().use { response ->
                         if (!response.isSuccessful) {
                             val errBody = response.body?.string() ?: ""
-                            Log.w(TAG, "Stream to $modelName failed (${response.code}): $errBody")
-                            lastErrorMessage = try {
+                            val safeErrBody = SecureKeyStoreHelper.redactSecret(errBody, apiKey).take(300)
+                            Log.w(TAG, "Stream to $modelName failed (${response.code}): $safeErrBody")
+                            val rawErrMsg = try {
                                 JSONObject(errBody).optJSONObject("error")?.optString("message") ?: "HTTP ${response.code}"
                             } catch (e: Exception) {
                                 "HTTP ${response.code}"
                             }
+                            lastErrorMessage = SecureKeyStoreHelper.redactSecret(rawErrMsg, apiKey)
 
                             if (trySearch && (lastErrorMessage.contains("quota", ignoreCase = true) || lastErrorMessage.contains("429"))) {
                                 trySearch = false
@@ -844,9 +853,10 @@ If you have not yet configured a personal Google AI Studio key, open the **Side 
 
                     if (streamSuccess) {
                         preferredModel = modelName
+                        val ragCitations = buildRagContextCitations(ragContext)
                         return@withContext GeminiResult(
                             text = accumulatedText.toString().trim(),
-                            groundingSources = groundingSources.distinctBy { it.uri },
+                            groundingSources = (ragCitations + groundingSources).distinctBy { "${it.title}|${it.uri}" },
                             isError = false
                         )
                     }
@@ -1008,12 +1018,12 @@ If you have not yet configured a personal Google AI Studio key, open the **Side 
                         val responseBodyString = httpResponse.body?.string() ?: ""
 
                         if (!httpResponse.isSuccessful) {
-                            val errorMsg = try {
+                            val rawErrorMsg = try {
                                 JSONObject(responseBodyString).optJSONObject("error")?.optString("message") ?: "HTTP ${httpResponse.code}"
                             } catch (e: Exception) {
                                 "HTTP ${httpResponse.code}"
                             }
-                            lastErrorMessage = errorMsg
+                            lastErrorMessage = SecureKeyStoreHelper.redactSecret(rawErrorMsg, apiKey)
                             return@use
                         }
 
@@ -1040,13 +1050,14 @@ If you have not yet configured a personal Google AI Studio key, open the **Side 
                         }
 
                         val (extractedSources, _) = VertexGeminiFileSearchService.extractGroundingFromCandidate(candidate)
-                        val groundingSources = extractedSources.toMutableList()
+                        val ragCitations = buildRagContextCitations(ragContext)
+                        val groundingSources = (ragCitations + extractedSources).distinctBy { "${it.title}|${it.uri}" }
 
                         val finalAnswer = responseStringBuilder.toString().trim()
                         if (finalAnswer.isNotEmpty()) {
                             return@withContext GeminiResult(
                                 text = finalAnswer,
-                                groundingSources = groundingSources.distinctBy { "${it.title}|${it.uri}" },
+                                groundingSources = groundingSources,
                                 isError = false
                             )
                         }

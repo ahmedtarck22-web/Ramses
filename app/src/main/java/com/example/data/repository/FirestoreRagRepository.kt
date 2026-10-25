@@ -11,6 +11,7 @@ import com.example.data.model.SeedRagBookBundle
 import com.example.firebase.OperationType
 import com.example.firebase.handleFirestoreError
 import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.snapshots
 import kotlinx.coroutines.CancellationException
@@ -39,7 +40,9 @@ class FirestoreRagRepository(
     companion object {
         private const val TAG = "FirestoreRagRepo"
         const val SEED_ASSET_PATH = "rag/ramses_5books_rag.pack"
-        private const val MAX_BATCH_OPS = 380
+        private const val MAX_FOLDER_BATCH_OPS = 15
+        private const val MAX_CHUNK_BATCH_OPS = 9
+        private const val MAX_DELETE_BATCH_OPS = 380
         private val SEED_LOCK = Any()
 
         private val ARABIC_STOPWORDS = setOf(
@@ -373,12 +376,17 @@ class FirestoreRagRepository(
 
     suspend fun getSharedFolders(): Result<List<CloudRagFolder>> {
         return try {
+            val accessibleBookIds = getSharedBooks().getOrNull()?.map { it.bookId }?.toSet()
             val sharedSnap = db.collection("rag_folders")
                 .whereEqualTo("isShared", true)
                 .get()
                 .await()
-            val sharedList = sharedSnap.documents.map { CloudRagFolder.fromSnapshot(it) }
             val uid = authProvider()
+            val sharedList = sharedSnap.documents
+                .map { CloudRagFolder.fromSnapshot(it) }
+                .filter { folder ->
+                    folder.ownerId == uid || accessibleBookIds == null || folder.bookId in accessibleBookIds
+                }
             val ownedList = if (!uid.isNullOrBlank()) {
                 try {
                     db.collection("rag_folders")
@@ -393,7 +401,7 @@ class FirestoreRagRepository(
             } else {
                 emptyList()
             }
-            Result.success((sharedList + ownedList).distinctBy { it.folderId })
+            Result.success((ownedList + sharedList).distinctBy { it.folderId })
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -421,8 +429,23 @@ class FirestoreRagRepository(
                 .whereEqualTo("folderId", folderId)
                 .get()
                 .await()
-            val sharedChunks = sharedSnap.documents.map { CloudRagChunk.fromSnapshot(it) }
             val uid = authProvider()
+            val rawSharedChunks = sharedSnap.documents.map { CloudRagChunk.fromSnapshot(it) }
+            val nonOwnerBookIds = rawSharedChunks
+                .filter { it.ownerId != uid }
+                .map { it.bookId }
+                .distinct()
+            val verifiedSharedBookIds = if (nonOwnerBookIds.isEmpty()) {
+                emptySet()
+            } else {
+                nonOwnerBookIds.filter { bid ->
+                    val book = getBookById(bid).getOrNull()
+                    book != null && book.isShared
+                }.toSet()
+            }
+            val sharedChunks = rawSharedChunks.filter { chunk ->
+                chunk.ownerId == uid || chunk.bookId in verifiedSharedBookIds
+            }
             val ownedChunks = if (!uid.isNullOrBlank()) {
                 try {
                     db.collection("rag_chunks")
@@ -438,7 +461,7 @@ class FirestoreRagRepository(
             } else {
                 emptyList()
             }
-            val sorted = (sharedChunks + ownedChunks)
+            val sorted = (ownedChunks + sharedChunks)
                 .distinctBy { it.chunkId }
                 .sortedBy { it.chunkIndex }
             Result.success(sorted)
@@ -452,28 +475,50 @@ class FirestoreRagRepository(
 
     /**
      * Uploads a structured book (metadata + small folders + cited chunks) to Cloud Firestore
-     * in atomic chunks of <= 380 operations per WriteBatch.
+     * in parent-first batches sized within Firestore's 20-getAfter-calls-per-batch rule ceiling.
      */
     suspend fun uploadBookBundle(bundle: SeedRagBookBundle): Result<Unit> = withContext(Dispatchers.IO) {
         try {
             val uid = requireAuthenticatedUid()
-            data class PendingWrite(val collection: String, val docId: String, val payload: Map<String, Any>)
+            val normalizedShared = bundle.book.isShared
+            val bookPayload = bundle.book.copy(isShared = normalizedShared).toCreateMap(uid)
+            val folderEntries = bundle.folders.map { folder ->
+                folder.folderId to folder.copy(
+                    bookId = bundle.book.bookId,
+                    isShared = normalizedShared
+                ).toCreateMap(uid)
+            }
+            val chunkEntries = bundle.chunks.map { chunk ->
+                chunk.chunkId to chunk.copy(
+                    bookId = bundle.book.bookId,
+                    isShared = normalizedShared
+                ).toCreateMap(uid)
+            }
 
-            val writes = buildList {
-                add(PendingWrite("rag_books", bundle.book.bookId, bundle.book.toCreateMap(uid)))
-                for (folder in bundle.folders) {
-                    add(PendingWrite("rag_folders", folder.folderId, folder.toCreateMap(uid)))
-                }
-                for (chunk in bundle.chunks) {
-                    add(PendingWrite("rag_chunks", chunk.chunkId, chunk.toCreateMap(uid)))
+            // Stage 1: Commit parent book + first slice of folders (<= 15 getAfter calls per batch)
+            val folderSlices = folderEntries.chunked(MAX_FOLDER_BATCH_OPS)
+            if (folderSlices.isEmpty()) {
+                val bookBatch = db.batch()
+                bookBatch.set(db.collection("rag_books").document(bundle.book.bookId), bookPayload)
+                bookBatch.commit().await()
+            } else {
+                for ((idx, slice) in folderSlices.withIndex()) {
+                    val batch = db.batch()
+                    if (idx == 0) {
+                        batch.set(db.collection("rag_books").document(bundle.book.bookId), bookPayload)
+                    }
+                    for ((docId, payload) in slice) {
+                        batch.set(db.collection("rag_folders").document(docId), payload)
+                    }
+                    batch.commit().await()
                 }
             }
 
-            for (slice in writes.chunked(MAX_BATCH_OPS)) {
+            // Stage 2: Commit chunks in slices of <= 9 (2 getAfter calls/chunk = <= 18 calls/batch)
+            for (slice in chunkEntries.chunked(MAX_CHUNK_BATCH_OPS)) {
                 val batch = db.batch()
-                for (op in slice) {
-                    val ref = db.collection(op.collection).document(op.docId)
-                    batch.set(ref, op.payload)
+                for ((docId, payload) in slice) {
+                    batch.set(db.collection("rag_chunks").document(docId), payload)
                 }
                 batch.commit().await()
             }
@@ -482,6 +527,129 @@ class FirestoreRagRepository(
             throw e
         } catch (e: Exception) {
             handleFirestoreError(e, OperationType.WRITE, "rag_books/${bundle.book.bookId}")
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Updates sharing state (`isShared`) consistently across a book, all its folders, and all its chunks
+     * owned by the currently authenticated user.
+     */
+    suspend fun setBookShared(bookId: String, isShared: Boolean): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            val uid = requireAuthenticatedUid()
+            val bookRef = db.collection("rag_books").document(bookId)
+            val bookSnap = bookRef.get().await()
+            if (!bookSnap.exists()) {
+                return@withContext Result.failure(NoSuchElementException("Book '$bookId' does not exist."))
+            }
+            val ownerId = bookSnap.getString("ownerId").orEmpty()
+            if (ownerId != uid) {
+                return@withContext Result.failure(SecurityException("Only the book owner can change sharing permissions."))
+            }
+
+            val folderRefs = db.collection("rag_folders")
+                .whereEqualTo("ownerId", uid)
+                .whereEqualTo("bookId", bookId)
+                .get()
+                .await()
+                .documents
+                .map { it.reference }
+
+            val chunkRefs = db.collection("rag_chunks")
+                .whereEqualTo("ownerId", uid)
+                .whereEqualTo("bookId", bookId)
+                .get()
+                .await()
+                .documents
+                .map { it.reference }
+
+            val updatePayload = mapOf(
+                "isShared" to isShared,
+                "updatedAt" to FieldValue.serverTimestamp()
+            )
+
+            // Update book + folders first so getAfter(book) & getAfter(folder) match incoming isShared
+            val folderSlices = folderRefs.chunked(MAX_FOLDER_BATCH_OPS)
+            if (folderSlices.isEmpty()) {
+                val batch = db.batch()
+                batch.update(bookRef, updatePayload)
+                batch.commit().await()
+            } else {
+                for ((idx, slice) in folderSlices.withIndex()) {
+                    val batch = db.batch()
+                    if (idx == 0) {
+                        batch.update(bookRef, updatePayload)
+                    }
+                    for (ref in slice) {
+                        batch.update(ref, updatePayload)
+                    }
+                    batch.commit().await()
+                }
+            }
+
+            for (slice in chunkRefs.chunked(MAX_CHUNK_BATCH_OPS)) {
+                val batch = db.batch()
+                for (ref in slice) {
+                    batch.update(ref, updatePayload)
+                }
+                batch.commit().await()
+            }
+
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, "rag_books/$bookId")
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Deletes a book and cascades deletion across all child chunks and folders so no orphaned records remain.
+     */
+    suspend fun deleteBookBundle(bookId: String): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            val uid = requireAuthenticatedUid()
+            val bookRef = db.collection("rag_books").document(bookId)
+            val bookSnap = bookRef.get().await()
+            if (!bookSnap.exists()) {
+                return@withContext Result.success(Unit)
+            }
+            if (bookSnap.getString("ownerId") != uid) {
+                return@withContext Result.failure(SecurityException("Only the book owner can delete this book."))
+            }
+
+            val chunkRefs = db.collection("rag_chunks")
+                .whereEqualTo("ownerId", uid)
+                .whereEqualTo("bookId", bookId)
+                .get()
+                .await()
+                .documents
+                .map { it.reference }
+
+            val folderRefs = db.collection("rag_folders")
+                .whereEqualTo("ownerId", uid)
+                .whereEqualTo("bookId", bookId)
+                .get()
+                .await()
+                .documents
+                .map { it.reference }
+
+            // Delete leaves first (chunks -> folders -> book) so non-owners never see dangling children
+            val allDeletes = chunkRefs + folderRefs + bookRef
+            for (slice in allDeletes.chunked(MAX_DELETE_BATCH_OPS)) {
+                val batch = db.batch()
+                for (ref in slice) {
+                    batch.delete(ref)
+                }
+                batch.commit().await()
+            }
+            Result.success(Unit)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.DELETE, "rag_books/$bookId")
             Result.failure(e)
         }
     }

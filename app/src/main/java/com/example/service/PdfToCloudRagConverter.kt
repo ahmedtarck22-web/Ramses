@@ -19,6 +19,7 @@ import com.google.firebase.ai.type.content
 import com.google.firebase.ai.type.generationConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
@@ -220,8 +221,10 @@ class PdfToCloudRagConverter(
                                     }
                                     val rawJson = response.text ?: throw IllegalStateException("لم يُرجع النموذج بيانات JSON.")
                                     parsed = JSONObject(rawJson)
-                                } catch (e: CancellationException) {
+                                } catch (e: TimeoutCancellationException) {
                                     if (attempt >= 2) Log.w(TAG, "Batch ${bIdx + 1} timed out; continuing remaining batches", e)
+                                } catch (e: CancellationException) {
+                                    throw e
                                 } catch (e: Exception) {
                                     if (attempt >= 2) Log.w(TAG, "Batch ${bIdx + 1} extraction failed; continuing remaining batches", e)
                                 }

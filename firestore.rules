@@ -27,8 +27,52 @@ service cloud.firestore {
       return resource.data;
     }
 
+    function areStringsFull10(arr, base) {
+      return arr[base] is string && arr[base + 1] is string &&
+             arr[base + 2] is string && arr[base + 3] is string &&
+             arr[base + 4] is string && arr[base + 5] is string &&
+             arr[base + 6] is string && arr[base + 7] is string &&
+             arr[base + 8] is string && arr[base + 9] is string;
+    }
+
+    function areStringsPartial9(arr, n, base) {
+      return arr[base] is string &&
+             (n <= base + 1 || arr[base + 1] is string) &&
+             (n <= base + 2 || arr[base + 2] is string) &&
+             (n <= base + 3 || arr[base + 3] is string) &&
+             (n <= base + 4 || arr[base + 4] is string) &&
+             (n <= base + 5 || arr[base + 5] is string) &&
+             (n <= base + 6 || arr[base + 6] is string) &&
+             (n <= base + 7 || arr[base + 7] is string) &&
+             (n <= base + 8 || arr[base + 8] is string);
+    }
+
+    function areStringsSlice10(arr, n, base) {
+      return n <= base || (n >= base + 10 ? areStringsFull10(arr, base) : areStringsPartial9(arr, n, base));
+    }
+
+    function isValidJoinedStringList(joined, count) {
+      return joined.split('\u001F').size() == count &&
+             joined.matches('^[^\u001F]{1,100}(\u001F[^\u001F]{1,100})*$');
+    }
+
+    function isBoundedStringListChecked(arr, n, maxLen) {
+      return n <= maxLen &&
+             (n == 0 || (
+               areStringsSlice10(arr, n, 0) &&
+               areStringsSlice10(arr, n, 10) &&
+               areStringsSlice10(arr, n, 20) &&
+               areStringsSlice10(arr, n, 30) &&
+               areStringsSlice10(arr, n, 40) &&
+               isValidJoinedStringList(arr.join('\u001F'), n)
+             ));
+    }
+
     function isBoundedStringList(arr, maxLen) {
-      return arr is list && arr.size() <= maxLen && (arr.size() == 0 || (arr[0] is string && arr[0].size() <= 100));
+      return arr is list &&
+             maxLen >= 0 &&
+             maxLen <= 50 &&
+             isBoundedStringListChecked(arr, arr.size(), maxLen);
     }
 
     // -------------------------------------------------------------------------
@@ -106,6 +150,43 @@ service cloud.firestore {
     // -------------------------------------------------------------------------
     // 2. Cloud Firebase RAG Knowledge Base (Books -> Small Folders -> Chunks)
     // -------------------------------------------------------------------------
+    function bookDocPath(bookId) {
+      return /databases/$(database)/documents/rag_books/$(bookId);
+    }
+
+    function folderDocPath(folderId) {
+      return /databases/$(database)/documents/rag_folders/$(folderId);
+    }
+
+    function isBookDataConsistent(bookDoc, ownerId, isShared) {
+      return bookDoc != null &&
+             bookDoc.data.ownerId == ownerId &&
+             bookDoc.data.isShared == isShared;
+    }
+
+    function hasConsistentParentBookAfter(bookId, ownerId, isShared) {
+      return isBookDataConsistent(getAfter(bookDocPath(bookId)), ownerId, isShared);
+    }
+
+    function isFolderDataConsistent(folderDoc, bookId, ownerId, isShared) {
+      return folderDoc != null &&
+             folderDoc.data.bookId == bookId &&
+             folderDoc.data.ownerId == ownerId &&
+             folderDoc.data.isShared == isShared;
+    }
+
+    function hasConsistentParentFolderAfter(folderId, bookId, ownerId, isShared) {
+      return isFolderDataConsistent(getAfter(folderDocPath(folderId)), bookId, ownerId, isShared);
+    }
+
+    function isParentBookCurrentlyShared(bookId, expectedOwnerId) {
+      return isBookDataConsistent(get(bookDocPath(bookId)), expectedOwnerId, true);
+    }
+
+    function isParentFolderCurrentlyShared(folderId, expectedBookId, expectedOwnerId) {
+      return isFolderDataConsistent(get(folderDocPath(folderId)), expectedBookId, expectedOwnerId, true);
+    }
+
     function isValidRagBook(data, bookId) {
       return data.bookId is string && data.bookId == bookId &&
              data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 &&
@@ -158,7 +239,7 @@ service cloud.firestore {
 
     match /rag_books/{bookId} {
       allow get: if isSignedIn() && isValidId(bookId) &&
-                    (existing().ownerId == request.auth.uid || existing().isShared == true);
+                    (resource == null || existing().ownerId == request.auth.uid || existing().isShared == true);
       allow list: if isSignedIn() &&
                      (existing().ownerId == request.auth.uid || existing().isShared == true);
       allow create: if isSignedIn() &&
@@ -180,7 +261,10 @@ service cloud.firestore {
 
     match /rag_folders/{folderId} {
       allow get: if isSignedIn() && isValidId(folderId) &&
-                    (existing().ownerId == request.auth.uid || existing().isShared == true);
+                    (resource == null ||
+                     existing().ownerId == request.auth.uid ||
+                     (existing().isShared == true &&
+                      isParentBookCurrentlyShared(existing().bookId, existing().ownerId)));
       allow list: if isSignedIn() &&
                      (existing().ownerId == request.auth.uid || existing().isShared == true);
       allow create: if isSignedIn() &&
@@ -188,7 +272,8 @@ service cloud.firestore {
                        incoming().ownerId == request.auth.uid &&
                        incoming().keys().hasAll(['folderId', 'bookId', 'bookTitle', 'ownerId', 'isShared', 'folderIndex', 'folderTitle', 'category', 'pageRange', 'topicSummary', 'chunkCount', 'keywords', 'createdAt', 'updatedAt']) &&
                        incoming().keys().hasOnly(['folderId', 'bookId', 'bookTitle', 'ownerId', 'isShared', 'folderIndex', 'folderTitle', 'category', 'pageRange', 'topicSummary', 'chunkCount', 'keywords', 'createdAt', 'updatedAt']) &&
-                       isValidRagFolder(incoming(), folderId);
+                       isValidRagFolder(incoming(), folderId) &&
+                       hasConsistentParentBookAfter(incoming().bookId, request.auth.uid, incoming().isShared);
       allow update: if isSignedIn() &&
                        isValidId(folderId) &&
                        isValidRagFolder(incoming(), folderId) &&
@@ -197,13 +282,18 @@ service cloud.firestore {
                        incoming().folderId == existing().folderId &&
                        incoming().bookId == existing().bookId &&
                        incoming().createdAt == existing().createdAt &&
-                       incoming().diff(existing()).affectedKeys().hasOnly(['isShared', 'bookTitle', 'folderIndex', 'folderTitle', 'category', 'pageRange', 'topicSummary', 'chunkCount', 'keywords', 'updatedAt']);
+                       incoming().diff(existing()).affectedKeys().hasOnly(['isShared', 'bookTitle', 'folderIndex', 'folderTitle', 'category', 'pageRange', 'topicSummary', 'chunkCount', 'keywords', 'updatedAt']) &&
+                       hasConsistentParentBookAfter(incoming().bookId, request.auth.uid, incoming().isShared);
       allow delete: if isSignedIn() && isValidId(folderId) && existing().ownerId == request.auth.uid;
     }
 
     match /rag_chunks/{chunkId} {
       allow get: if isSignedIn() && isValidId(chunkId) &&
-                    (existing().ownerId == request.auth.uid || existing().isShared == true);
+                    (resource == null ||
+                     existing().ownerId == request.auth.uid ||
+                     (existing().isShared == true &&
+                      isParentBookCurrentlyShared(existing().bookId, existing().ownerId) &&
+                      isParentFolderCurrentlyShared(existing().folderId, existing().bookId, existing().ownerId)));
       allow list: if isSignedIn() &&
                      (existing().ownerId == request.auth.uid || existing().isShared == true);
       allow create: if isSignedIn() &&
@@ -211,7 +301,9 @@ service cloud.firestore {
                        incoming().ownerId == request.auth.uid &&
                        incoming().keys().hasAll(['chunkId', 'bookId', 'bookTitle', 'folderId', 'folderTitle', 'ownerId', 'isShared', 'chunkIndex', 'pageRange', 'title', 'content', 'keywords', 'createdAt', 'updatedAt']) &&
                        incoming().keys().hasOnly(['chunkId', 'bookId', 'bookTitle', 'folderId', 'folderTitle', 'ownerId', 'isShared', 'chunkIndex', 'pageRange', 'title', 'content', 'keywords', 'createdAt', 'updatedAt']) &&
-                       isValidRagChunk(incoming(), chunkId);
+                       isValidRagChunk(incoming(), chunkId) &&
+                       hasConsistentParentBookAfter(incoming().bookId, request.auth.uid, incoming().isShared) &&
+                       hasConsistentParentFolderAfter(incoming().folderId, incoming().bookId, request.auth.uid, incoming().isShared);
       allow update: if isSignedIn() &&
                        isValidId(chunkId) &&
                        isValidRagChunk(incoming(), chunkId) &&
@@ -221,7 +313,9 @@ service cloud.firestore {
                        incoming().bookId == existing().bookId &&
                        incoming().folderId == existing().folderId &&
                        incoming().createdAt == existing().createdAt &&
-                       incoming().diff(existing()).affectedKeys().hasOnly(['isShared', 'bookTitle', 'folderTitle', 'chunkIndex', 'pageRange', 'title', 'content', 'keywords', 'updatedAt']);
+                       incoming().diff(existing()).affectedKeys().hasOnly(['isShared', 'bookTitle', 'folderTitle', 'chunkIndex', 'pageRange', 'title', 'content', 'keywords', 'updatedAt']) &&
+                       hasConsistentParentBookAfter(incoming().bookId, request.auth.uid, incoming().isShared) &&
+                       hasConsistentParentFolderAfter(incoming().folderId, incoming().bookId, request.auth.uid, incoming().isShared);
       allow delete: if isSignedIn() && isValidId(chunkId) && existing().ownerId == request.auth.uid;
     }
   }

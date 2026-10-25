@@ -278,7 +278,10 @@ open class GeminiPromptViewModel(
         val responseBody = response.body?.string().orEmpty()
 
         if (!response.isSuccessful) {
-            val errorMessage = parseApiErrorMessage(responseBody, response.code)
+            val errorMessage = SecureKeyStoreHelper.redactSecret(
+                parseApiErrorMessage(responseBody, response.code),
+                apiKey
+            )
             throw IOException(errorMessage)
         }
 

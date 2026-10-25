@@ -169,4 +169,43 @@ class GeminiPromptViewModelTest {
         val error = state as GeminiPromptUiState.Error
         assertTrue(error.message.contains("API key not valid"))
     }
+
+    @Test
+    fun testErrorResponseNeverLeaksEchoedApiKey() = runTest {
+        val secretKey = "AIzaSyEchoedSecretTestKey998877"
+        val errorJson = """
+            {
+              "error": {
+                "code": 400,
+                "message": "Invalid credential token $secretKey supplied to endpoint.",
+                "status": "INVALID_ARGUMENT"
+              }
+            }
+        """.trimIndent()
+
+        val mockClient = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                Response.Builder()
+                    .request(chain.request())
+                    .protocol(Protocol.HTTP_1_1)
+                    .code(400)
+                    .message("Bad Request")
+                    .body(errorJson.toResponseBody("application/json".toMediaType()))
+                    .build()
+            }
+            .build()
+
+        val viewModel = object : GeminiPromptViewModel(mockClient, testDispatcher) {
+            override fun getApiKeyFromBuildConfig(): String = secretKey
+        }
+
+        viewModel.sendPrompt("Test redaction")
+        advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertTrue(state is GeminiPromptUiState.Error)
+        val msg = (state as GeminiPromptUiState.Error).message
+        org.junit.Assert.assertFalse("Secret key must never appear in UI error message", msg.contains(secretKey))
+        assertTrue(msg.contains("[REDACTED_KEY]"))
+    }
 }

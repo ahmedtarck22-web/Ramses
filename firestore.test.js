@@ -331,3 +331,215 @@ test("Private RAG query alignment: owner can list own private books/folders/chun
   );
 });
 
+// ---------------------------------------------------------------------------
+// 4. Bounded String List Validation Across All Elements (0..49)
+// ---------------------------------------------------------------------------
+test("isBoundedStringList: validates type and 1..100 length for every element, not just index 0", async () => {
+  const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
+
+  // Valid empty list and valid 40-element list on RagBook succeed
+  const fortyValid = Array.from({ length: 40 }, (_, i) => `كلمة_مفتاحية_${i + 1}`);
+  await assertSucceeds(
+    aliceDb.collection("rag_books").doc("book_empty_kw").set({
+      ...validBook(ALICE_UID, true),
+      bookId: "book_empty_kw",
+      keywords: [],
+    })
+  );
+  await assertSucceeds(
+    aliceDb.collection("rag_books").doc("book_max_kw").set({
+      ...validBook(ALICE_UID, true),
+      bookId: "book_max_kw",
+      keywords: fortyValid,
+    })
+  );
+
+  // Valid 50-element list on RagFolder succeeds
+  const fiftyValid = Array.from({ length: 50 }, (_, i) => `موضوع_${i + 1}`);
+  await assertSucceeds(
+    aliceDb.collection("rag_folders").doc("book_max_kw_f01").set({
+      ...validFolder(ALICE_UID, true),
+      folderId: "book_max_kw_f01",
+      bookId: "book_max_kw",
+      keywords: fiftyValid,
+    })
+  );
+
+  // Reject non-string at index 1 (previously bypassed when only arr[0] was checked)
+  await assertFails(
+    aliceDb.collection("rag_books").doc("book_bad_idx1").set({
+      ...validBook(ALICE_UID, true),
+      bookId: "book_bad_idx1",
+      keywords: ["رمسيس الثاني", 12345],
+    })
+  );
+
+  // Reject non-string at middle index 15 and tail index 39
+  const badIdx15 = [...fortyValid];
+  badIdx15[15] = { nested: "invalid" };
+  await assertFails(
+    aliceDb.collection("rag_books").doc("book_bad_idx15").set({
+      ...validBook(ALICE_UID, true),
+      bookId: "book_bad_idx15",
+      keywords: badIdx15,
+    })
+  );
+
+  const badIdx39 = [...fortyValid];
+  badIdx39[39] = false;
+  await assertFails(
+    aliceDb.collection("rag_books").doc("book_bad_idx39").set({
+      ...validBook(ALICE_UID, true),
+      bookId: "book_bad_idx39",
+      keywords: badIdx39,
+    })
+  );
+
+  // Reject empty string "" at tail index and >100-char string at index 49 on RagFolder
+  await assertFails(
+    aliceDb.collection("rag_books").doc("book_empty_elem").set({
+      ...validBook(ALICE_UID, true),
+      bookId: "book_empty_elem",
+      keywords: ["رمسيس", "قادش", ""],
+    })
+  );
+
+  const badFolderIdx49 = [...fiftyValid];
+  badFolderIdx49[49] = "أ".repeat(101);
+  await assertFails(
+    aliceDb.collection("rag_folders").doc("book_max_kw_f02").set({
+      ...validFolder(ALICE_UID, true),
+      folderId: "book_max_kw_f02",
+      bookId: "book_max_kw",
+      keywords: badFolderIdx49,
+    })
+  );
+
+  // Reject list exceeding maxLen (41 on RagBook, 51 on RagFolder)
+  await assertFails(
+    aliceDb.collection("rag_books").doc("book_over_max").set({
+      ...validBook(ALICE_UID, true),
+      bookId: "book_over_max",
+      keywords: [...fortyValid, "زيادة"],
+    })
+  );
+  await assertFails(
+    aliceDb.collection("rag_folders").doc("book_max_kw_f03").set({
+      ...validFolder(ALICE_UID, true),
+      folderId: "book_max_kw_f03",
+      bookId: "book_max_kw",
+      keywords: [...fiftyValid, "زيادة"],
+    })
+  );
+
+  // Reject delimiter-injection attempt trying to split an over-100-char string
+  await assertFails(
+    aliceDb.collection("rag_books").doc("book_delim_inject").set({
+      ...validBook(ALICE_UID, true),
+      bookId: "book_delim_inject",
+      keywords: ["أ".repeat(60) + "\u001F" + "ب".repeat(60)],
+    })
+  );
+});
+
+// ---------------------------------------------------------------------------
+// 5. Parent Consistency, Ownership Immutability & Sharing Revocation
+// ---------------------------------------------------------------------------
+test("Sharing & parent consistency: blocks orphan/cross-owner/mismatched-share writes and revokes child get immediately", async () => {
+  const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
+  const bobDb = testEnv.authenticatedContext(BOB_UID).firestore();
+
+  // 1. Cannot create folder when parent book does not exist
+  await assertFails(
+    aliceDb.collection("rag_folders").doc("orphan_f01").set({
+      ...validFolder(ALICE_UID, true),
+      folderId: "orphan_f01",
+      bookId: "nonexistent_book",
+    })
+  );
+
+  // 2. Alice creates a shared book + folder + chunk
+  await assertSucceeds(
+    aliceDb.collection("rag_books").doc("book_pharaonic_02").set(validBook(ALICE_UID, true))
+  );
+  await assertSucceeds(
+    aliceDb.collection("rag_folders").doc("book_pharaonic_02_f05").set(validFolder(ALICE_UID, true))
+  );
+  await assertSucceeds(
+    aliceDb.collection("rag_chunks").doc("book_pharaonic_02_f05_c01").set(validChunk(ALICE_UID, true))
+  );
+
+  // 3. Bob cannot attach his own folder or chunk under Alice's book
+  await assertFails(
+    bobDb.collection("rag_folders").doc("bob_hijack_f01").set({
+      ...validFolder(BOB_UID, true),
+      folderId: "bob_hijack_f01",
+      bookId: "book_pharaonic_02",
+    })
+  );
+  await assertFails(
+    bobDb.collection("rag_chunks").doc("bob_hijack_c01").set({
+      ...validChunk(BOB_UID, true),
+      chunkId: "bob_hijack_c01",
+      bookId: "book_pharaonic_02",
+      folderId: "book_pharaonic_02_f05",
+    })
+  );
+
+  // 4. Alice cannot create a shared folder/chunk under a private book (mismatched isShared)
+  await assertSucceeds(
+    aliceDb.collection("rag_books").doc("book_private_only").set({
+      ...validBook(ALICE_UID, false),
+      bookId: "book_private_only",
+    })
+  );
+  await assertFails(
+    aliceDb.collection("rag_folders").doc("book_private_only_f01").set({
+      ...validFolder(ALICE_UID, true),
+      folderId: "book_private_only_f01",
+      bookId: "book_private_only",
+    })
+  );
+
+  // 5. Owner cannot mutate ownerId on update
+  await assertFails(
+    aliceDb.collection("rag_books").doc("book_pharaonic_02").update({
+      ownerId: BOB_UID,
+      updatedAt: serverTs(),
+    })
+  );
+
+  // 6. While shared, Bob can get book, folder, and chunk
+  await assertSucceeds(bobDb.collection("rag_books").doc("book_pharaonic_02").get());
+  await assertSucceeds(bobDb.collection("rag_folders").doc("book_pharaonic_02_f05").get());
+  await assertSucceeds(bobDb.collection("rag_chunks").doc("book_pharaonic_02_f05_c01").get());
+
+  // 7. Instant revocation on parent book: even before child docs are updated, Bob's get() on child folder & chunk is denied!
+  await assertSucceeds(
+    aliceDb.collection("rag_books").doc("book_pharaonic_02").update({
+      isShared: false,
+      updatedAt: serverTs(),
+    })
+  );
+  await assertFails(bobDb.collection("rag_books").doc("book_pharaonic_02").get());
+  await assertFails(bobDb.collection("rag_folders").doc("book_pharaonic_02_f05").get());
+  await assertFails(bobDb.collection("rag_chunks").doc("book_pharaonic_02_f05_c01").get());
+
+  // Owner Alice can still read her own revoked book, folder, and chunk, and cascade isShared = false to children
+  await assertSucceeds(aliceDb.collection("rag_folders").doc("book_pharaonic_02_f05").get());
+  await assertSucceeds(aliceDb.collection("rag_chunks").doc("book_pharaonic_02_f05_c01").get());
+  await assertSucceeds(
+    aliceDb.collection("rag_folders").doc("book_pharaonic_02_f05").update({
+      isShared: false,
+      updatedAt: serverTs(),
+    })
+  );
+  await assertSucceeds(
+    aliceDb.collection("rag_chunks").doc("book_pharaonic_02_f05_c01").update({
+      isShared: false,
+      updatedAt: serverTs(),
+    })
+  );
+});
+
+

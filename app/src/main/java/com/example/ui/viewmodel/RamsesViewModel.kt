@@ -35,6 +35,7 @@ import com.example.data.model.VoiceCallState
 import com.example.data.repository.FirestoreChatRepository
 import com.example.data.repository.FirestoreRagRepository
 import com.example.firebase.FirebaseAuthManager
+import com.example.security.SecureKeyStoreHelper
 import com.example.service.GeminiLiveWebSocketClient
 import com.example.service.PdfToCloudRagConverter
 import com.example.service.RamsesFileSearchOrchestrator
@@ -189,17 +190,21 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
     private val _streamingMessage = MutableStateFlow<ChatMessage?>(null)
     val streamingMessage: StateFlow<ChatMessage?> = _streamingMessage.asStateFlow()
 
-    // User authentication profile state
+    // User authentication profile state (strictly derived from verified FirebaseAuth session)
     private val _userProfile = MutableStateFlow(
-        UserProfile(
-            email = prefs.getString("user_email", null),
-            displayName = prefs.getString("user_display_name", "زائر ملكي") ?: "زائر ملكي",
-            provider = when (prefs.getString("user_provider", "GUEST")) {
-                "GOOGLE" -> AuthProvider.GOOGLE
-                "APPLE" -> AuthProvider.APPLE
-                else -> AuthProvider.GUEST
-            },
-            isSignedIn = prefs.getBoolean("user_is_signed_in", false)
+        authManager.currentUser.value?.let { user ->
+            UserProfile(
+                email = user.email,
+                displayName = user.displayName ?: prefs.getString("user_display_name", "مستخدم مسجل") ?: "مستخدم مسجل",
+                provider = AuthProvider.GOOGLE,
+                isSignedIn = true,
+                avatarUrl = user.photoUrl?.toString()
+            )
+        } ?: UserProfile(
+            email = null,
+            displayName = if (prefs.getString("app_language", "AR") == "EN") "Royal Guest" else "زائر ملكي",
+            provider = AuthProvider.GUEST,
+            isSignedIn = false
         )
     )
     val userProfile: StateFlow<UserProfile> = _userProfile.asStateFlow()
@@ -228,7 +233,11 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
     private var cloudFoldersListenerJob: Job? = null
 
     init {
-        _customApiKey.value = prefs.getString("custom_gemini_key", "") ?: ""
+        _customApiKey.value = SecureKeyStoreHelper.readEncryptedPref(
+            prefs = prefs,
+            encryptedKey = "custom_gemini_key_enc",
+            legacyPlainKey = "custom_gemini_key"
+        )
         _isSearchGroundingEnabled.value = prefs.getBoolean("search_grounding", false)
         GeminiApiClient.preferredModel = _selectedModel.value
 
@@ -246,24 +255,31 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             authManager.currentUser.collect { user ->
                 if (user != null) {
+                    val resolvedName = user.displayName ?: "مستخدم مسجل"
                     _userProfile.value = UserProfile(
                         email = user.email,
-                        displayName = user.displayName ?: "مستخدم مسجل",
+                        displayName = resolvedName,
                         provider = AuthProvider.GOOGLE,
                         isSignedIn = true,
                         avatarUrl = user.photoUrl?.toString()
                     )
+                    prefs.edit()
+                        .putString("user_display_name", resolvedName)
+                        .putString("user_provider", "GOOGLE")
+                        .remove("user_is_signed_in")
+                        .apply()
                     firestoreRepo.syncUserProfile(user)
                     startCloudRagListeners()
                     syncFiveBooksToCloudFirebase()
                 } else {
                     stopCloudRagListenersAndUseBundledSeed()
-                    if (_userProfile.value.isSignedIn) {
-                        _userProfile.value = _userProfile.value.copy(
-                            provider = AuthProvider.GUEST,
-                            isSignedIn = false
-                        )
-                    }
+                    val guestName = if (_appLanguage.value == AppLanguage.ARABIC) "زائر ملكي" else "Royal Guest"
+                    _userProfile.value = UserProfile(
+                        email = null,
+                        displayName = guestName,
+                        provider = AuthProvider.GUEST,
+                        isSignedIn = false
+                    )
                 }
             }
         }
@@ -297,12 +313,20 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
             val sid = _currentSessionId.value
             viewModelScope.launch(Dispatchers.IO) {
                 val uid = authManager.currentUser.value?.uid
+                val now = System.currentTimeMillis()
+                val titleSnippet = userSpoken.ifBlank { modelSpoken }.take(40)
+                if (titleSnippet.isNotBlank()) {
+                    chatDao.updateSessionTitleAndTimestamp(sid, titleSnippet, now)
+                    if (uid != null) {
+                        firestoreRepo.upsertSessionMetadata(sid, titleSnippet, uid)
+                    }
+                }
                 if (userSpoken.isNotBlank()) {
                     val uEntity = ChatMessageEntity(
                         sessionId = sid,
                         sender = "USER",
                         text = userSpoken,
-                        timestamp = System.currentTimeMillis(),
+                        timestamp = now,
                         isVoiceResponse = true
                     )
                     chatDao.insertMessage(uEntity)
@@ -313,7 +337,7 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
                         sessionId = sid,
                         sender = "RAMSES",
                         text = modelSpoken,
-                        timestamp = System.currentTimeMillis() + 5L,
+                        timestamp = now + 5L,
                         isVoiceResponse = true
                     )
                     chatDao.insertMessage(mEntity)
@@ -773,13 +797,22 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch(Dispatchers.IO) {
             chatDao.clearAllMessages()
             chatDao.clearAllSessions()
+            val uid = authManager.currentUser.value?.uid
+            if (uid != null) {
+                firestoreRepo.clearAllSessions(uid)
+            }
             startNewSession()
         }
     }
 
     fun deleteMessage(messageId: String) {
+        val sid = _currentSessionId.value
         viewModelScope.launch(Dispatchers.IO) {
             chatDao.deleteMessage(messageId)
+            val uid = authManager.currentUser.value?.uid
+            if (uid != null) {
+                firestoreRepo.deleteMessage(sid, messageId, uid)
+            }
         }
     }
 
@@ -860,6 +893,11 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
                     updatedAt = now
                 )
                 if (uid != null) {
+                    firestoreRepo.upsertSessionMetadata(
+                        sessionId = sessionId,
+                        title = userText.take(40),
+                        userId = uid
+                    )
                     firestoreRepo.saveMessage(userEntity, uid)
                 }
             } catch (e: Exception) {
@@ -1027,10 +1065,11 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
                 _isLoading.value = false
 
                 val isArabic = _appLanguage.value == AppLanguage.ARABIC
+                val safeDetail = SecureKeyStoreHelper.redactSecret(e.localizedMessage, _customApiKey.value)
                 val errorMsg = if (isArabic) {
-                    "حدث خطأ أثناء معالجة الطلب: ${e.localizedMessage ?: "خطأ غير متوقع في الاتصال"}"
+                    "حدث خطأ أثناء معالجة الطلب: ${safeDetail.ifBlank { "خطأ غير متوقع في الاتصال" }}"
                 } else {
-                    "An error occurred while processing your request: ${e.localizedMessage ?: "Unexpected connection error"}"
+                    "An error occurred while processing your request: ${safeDetail.ifBlank { "Unexpected connection error" }}"
                 }
                 val errorEntity = ChatMessageEntity(
                     id = UUID.randomUUID().toString(),
@@ -1090,11 +1129,22 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
         ttsHelper.stop()
         speechHelper.stopListening()
 
+        val cloudBookSummaries = _cloudRagBooks.value.take(10).map { book ->
+            RagDocument(
+                id = "live_book_${book.bookId}",
+                title = "${book.title} (${book.author})",
+                content = "${book.eraCategory} — ${book.summary}",
+                category = "مكتبة الكتب المفهرسة (${book.pageCount} ص)",
+                isEnabled = true
+            )
+        }
+        val combinedLiveDocs = ragDocuments.value.filter { it.isEnabled } + cloudBookSummaries
+
         val wsStarted = geminiLiveClient.startSession(
             customApiKey = _customApiKey.value,
             appLanguage = _appLanguage.value,
             gemPersona = _selectedGem.value,
-            ragDocs = ragDocuments.value
+            ragDocs = combinedLiveDocs
         )
 
         if (wsStarted) {
@@ -1214,8 +1264,14 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun setCustomApiKey(key: String) {
-        _customApiKey.value = key
-        prefs.edit().putString("custom_gemini_key", key).apply()
+        val cleanKey = key.trim()
+        _customApiKey.value = cleanKey
+        SecureKeyStoreHelper.saveEncryptedPref(
+            prefs = prefs,
+            encryptedKey = "custom_gemini_key_enc",
+            legacyPlainKey = "custom_gemini_key",
+            plainValue = cleanKey
+        )
     }
 
     fun launchGoogleSignIn(activity: Activity, onComplete: (Boolean, String?) -> Unit) {
@@ -1247,15 +1303,14 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun signInWithGoogle(email: String = "", name: String = "") {
-        if (email.isNotBlank()) {
-            val profile = UserProfile(
-                email = email,
-                displayName = name.ifBlank { "مستخدم Google" },
-                provider = AuthProvider.GOOGLE,
-                isSignedIn = true
-            )
-            _userProfile.value = profile
-        }
+        val verifiedUser = authManager.currentUser.value ?: return
+        _userProfile.value = UserProfile(
+            email = verifiedUser.email ?: email.ifBlank { null },
+            displayName = verifiedUser.displayName ?: name.ifBlank { "مستخدم Google" },
+            provider = AuthProvider.GOOGLE,
+            isSignedIn = true,
+            avatarUrl = verifiedUser.photoUrl?.toString()
+        )
     }
 
     fun signInWithApple(email: String = "", name: String = "") {
@@ -1275,7 +1330,7 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
             .remove("user_email")
             .putString("user_display_name", guest.displayName)
             .putString("user_provider", "GUEST")
-            .putBoolean("user_is_signed_in", false)
+            .remove("user_is_signed_in")
             .apply()
     }
 

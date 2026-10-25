@@ -3,11 +3,11 @@ package com.example
 import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.ImageDecoder
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
-import android.provider.MediaStore
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -244,20 +244,47 @@ fun RamsesApp(viewModel: RamsesViewModel) {
         }
     }
 
-    // Android Photo Picker launcher for multimodal analysis
+    // Android Photo Picker launcher for multimodal analysis (clamped to <= 1536px to prevent OOM)
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri: Uri? ->
         if (uri != null) {
             try {
+                val maxDimension = 1536
                 val bitmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                     val source = ImageDecoder.createSource(context.contentResolver, uri)
-                    ImageDecoder.decodeBitmap(source) { decoder, _, _ ->
+                    ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
+                        val width = info.size.width
+                        val height = info.size.height
+                        if (width > maxDimension || height > maxDimension) {
+                            val scale = maxDimension.toFloat() / maxOf(width, height).toFloat()
+                            decoder.setTargetSize(
+                                (width * scale).toInt().coerceAtLeast(1),
+                                (height * scale).toInt().coerceAtLeast(1)
+                            )
+                        }
+                        decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
                         decoder.isMutableRequired = true
                     }
                 } else {
-                    @Suppress("DEPRECATION")
-                    MediaStore.Images.Media.getBitmap(context.contentResolver, uri)
+                    val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    context.contentResolver.openInputStream(uri)?.use { stream ->
+                        BitmapFactory.decodeStream(stream, null, boundsOpts)
+                    }
+                    var sampleSize = 1
+                    while (
+                        boundsOpts.outWidth / sampleSize > maxDimension ||
+                        boundsOpts.outHeight / sampleSize > maxDimension
+                    ) {
+                        sampleSize *= 2
+                    }
+                    val decodeOpts = BitmapFactory.Options().apply {
+                        inSampleSize = sampleSize
+                        inPreferredConfig = Bitmap.Config.ARGB_8888
+                    }
+                    context.contentResolver.openInputStream(uri)?.use { stream ->
+                        BitmapFactory.decodeStream(stream, null, decodeOpts)
+                    } ?: throw IllegalStateException("Unable to open image stream")
                 }
                 viewModel.attachImage(bitmap)
                 Toast.makeText(context, "Image attached for analysis", Toast.LENGTH_SHORT).show()

@@ -36,11 +36,15 @@ class FirestoreChatRepository(
         val path = "users/${user.uid}"
         try {
             val userDoc = db.collection("users").document(user.uid)
+            val existingSnap = userDoc.get().await()
             val data = mutableMapOf<String, Any>(
                 "uid" to user.uid,
                 "displayName" to (user.displayName ?: "زائر ملكي").take(100),
                 "lastActiveAt" to FieldValue.serverTimestamp()
             )
+            if (!existingSnap.exists() || existingSnap.getTimestamp("createdAt") == null) {
+                data["createdAt"] = FieldValue.serverTimestamp()
+            }
             user.email?.takeIf { it.isNotBlank() }?.let { data["email"] = it.take(254) }
             user.photoUrl?.toString()?.takeIf { it.isNotBlank() }?.let { data["photoUrl"] = it.take(1024) }
 
@@ -59,13 +63,16 @@ class FirestoreChatRepository(
             val sessionDoc = db.collection("users").document(userId)
                 .collection("sessions").document(session.id)
 
-            val data = mapOf(
+            val existingSnap = sessionDoc.get().await()
+            val data = mutableMapOf<String, Any>(
                 "id" to session.id,
                 "userId" to userId,
                 "title" to session.title.ifBlank { "محادثة مع رمسيس" }.take(200),
-                "createdAt" to FieldValue.serverTimestamp(),
                 "updatedAt" to FieldValue.serverTimestamp()
             )
+            if (!existingSnap.exists() || existingSnap.getTimestamp("createdAt") == null) {
+                data["createdAt"] = FieldValue.serverTimestamp()
+            }
 
             sessionDoc.set(data, SetOptions.merge()).await()
             Log.d(TAG, "Session synced to Firestore: ${session.id}")
@@ -76,24 +83,36 @@ class FirestoreChatRepository(
         }
     }
 
-    suspend fun renameSession(sessionId: String, newTitle: String, userId: String) {
+    /**
+     * Upserts session title and updatedAt without overwriting existing createdAt.
+     * Safe even if the user signed in mid-session before the session document existed in Firestore.
+     */
+    suspend fun upsertSessionMetadata(sessionId: String, title: String, userId: String) {
         val path = "users/$userId/sessions/$sessionId"
         try {
             val sessionDoc = db.collection("users").document(userId)
                 .collection("sessions").document(sessionId)
 
-            val updates = mapOf(
-                "title" to newTitle.ifBlank { "محادثة" }.take(200),
+            val existingSnap = sessionDoc.get().await()
+            val data = mutableMapOf<String, Any>(
+                "id" to sessionId,
+                "userId" to userId,
+                "title" to title.ifBlank { "محادثة مع رمسيس" }.take(200),
                 "updatedAt" to FieldValue.serverTimestamp()
             )
-
-            sessionDoc.update(updates).await()
-            Log.d(TAG, "Session renamed in Firestore: $sessionId")
+            if (!existingSnap.exists() || existingSnap.getTimestamp("createdAt") == null) {
+                data["createdAt"] = FieldValue.serverTimestamp()
+            }
+            sessionDoc.set(data, SetOptions.merge()).await()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            handleFirestoreError(e, OperationType.UPDATE, path)
+            handleFirestoreError(e, OperationType.WRITE, path)
         }
+    }
+
+    suspend fun renameSession(sessionId: String, newTitle: String, userId: String) {
+        upsertSessionMetadata(sessionId = sessionId, title = newTitle, userId = userId)
     }
 
     suspend fun deleteSession(sessionId: String, userId: String) {
@@ -102,8 +121,48 @@ class FirestoreChatRepository(
             val sessionDoc = db.collection("users").document(userId)
                 .collection("sessions").document(sessionId)
 
+            // Delete subcollection messages first so no orphaned message documents remain
+            val messagesSnap = sessionDoc.collection("messages").get().await()
+            for (slice in messagesSnap.documents.chunked(400)) {
+                val batch = db.batch()
+                slice.forEach { batch.delete(it.reference) }
+                batch.commit().await()
+            }
+
             sessionDoc.delete().await()
-            Log.d(TAG, "Session deleted from Firestore: $sessionId")
+            Log.d(TAG, "Session and messages deleted from Firestore: $sessionId")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.DELETE, path)
+        }
+    }
+
+    suspend fun clearAllSessions(userId: String) {
+        val path = "users/$userId/sessions"
+        try {
+            val sessionsSnap = db.collection("users").document(userId)
+                .collection("sessions")
+                .get()
+                .await()
+            for (doc in sessionsSnap.documents) {
+                deleteSession(doc.id, userId)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.DELETE, path)
+        }
+    }
+
+    suspend fun deleteMessage(sessionId: String, messageId: String, userId: String) {
+        val path = "users/$userId/sessions/$sessionId/messages/$messageId"
+        try {
+            db.collection("users").document(userId)
+                .collection("sessions").document(sessionId)
+                .collection("messages").document(messageId)
+                .delete()
+                .await()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

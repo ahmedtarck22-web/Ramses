@@ -133,22 +133,20 @@ fun RamsesSceneView(
         for (path in candidatePaths.distinct()) {
             try {
                 val instance = modelLoader.createModelInstance(assetFileLocation = path)
-                if (instance != null) {
-                    val node = ModelNode(
-                        modelInstance = instance,
-                        scaleToUnits = currentScale
-                    )
-                    node.centerOrigin(Position(0f, 0f, 0f))
-                    // If model contains embedded animations, trigger playback
-                    if (node.animationCount > 0) {
-                        try {
-                            node.playAnimation(0, loop = true)
-                        } catch (_: Exception) {}
-                    }
-                    currentModelNode = node
-                    childNodes.add(node)
-                    break
+                val node = ModelNode(
+                    modelInstance = instance,
+                    scaleToUnits = currentScale
+                )
+                node.centerOrigin(Position(0f, 0f, 0f))
+                // If model contains embedded animations, trigger playback
+                if (node.animationCount > 0) {
+                    try {
+                        node.playAnimation(0, loop = true)
+                    } catch (_: Exception) {}
                 }
+                currentModelNode = node
+                childNodes.add(node)
+                break
             } catch (e: Exception) {
                 // Try fallback
             }
@@ -172,8 +170,14 @@ fun RamsesSceneView(
         currentModelNode?.let { node ->
             if (idleAnimationEnabled) {
                 if (isResponding) {
-                    // Real 3D mouth lip sync and hand to chin gesture
-                    val mouthAperture = ((sin(speechCycle * 4f) + 1f) * 0.5f).coerceIn(0.12f, 1f)
+                    // Real 3D mouth lip sync blending live audio RMS amplitude with speech cadence
+                    val cadence = ((sin(speechCycle * 4f) + 1f) * 0.5f)
+                    val liveEnergy = (rmsDb / 12f).coerceIn(0f, 1f)
+                    val mouthAperture = if (liveEnergy > 0.05f) {
+                        (liveEnergy * 0.72f + cadence * 0.28f).coerceIn(0.12f, 1f)
+                    } else {
+                        cadence.coerceIn(0.12f, 1f)
+                    }
                     val handToChin = (0.88f + (sin(speechCycle) * 0.12f)).coerceIn(0.70f, 1.0f)
                     try {
                         node.setMorphWeights(floatArrayOf(mouthAperture, handToChin), 0)
@@ -327,10 +331,10 @@ fun RamsesSceneView(
                     // Reset
                     IconButton(
                         onClick = {
-                            manualRotationY = 0f
+                            manualRotationY = 90f
                             manualRotationX = 0f
-                            currentScale = 1.0f
-                            autoRotate = true
+                            currentScale = 0.55f
+                            autoRotate = initialAutoRotate
                         },
                         modifier = Modifier
                             .size(36.dp)

@@ -114,5 +114,24 @@ class ExampleUnitTest {
         assertEquals(11, restored.joints.size)
         assertTrue(com.example.data.model.AvatarRigConfig.BONE_CONNECTIONS.isNotEmpty())
     }
+
+    @Test
+    fun testSecureKeyStoreHelperRedaction() {
+        val fakeKey = "AIzaSyTestSecretKey987654321"
+        val rawLog = "HTTP 400 error while calling endpoint with key=$fakeKey on host"
+        val sanitized = com.example.security.SecureKeyStoreHelper.redactSecret(rawLog, fakeKey)
+        org.junit.Assert.assertFalse(sanitized.contains(fakeKey))
+        assertTrue(sanitized.contains("[REDACTED_KEY]"))
+    }
+
+    @Test
+    fun testArabicMorphologicalStemmingAndNormalization() {
+        val stems1 = com.example.data.repository.FirestoreRagRepository.extractSearchStems("والمعاهدات الملكية")
+        val stems2 = com.example.data.repository.FirestoreRagRepository.extractSearchStems("معاهدة ملكي")
+        assertTrue("Expected morphological stem overlap between plural/clitic and singular forms", stems1.intersect(stems2).isNotEmpty())
+
+        val norm = com.example.data.repository.FirestoreRagRepository.normalizeSearchText("إِبْرَاهِيمُ وَالْآثَارُ الْمِصْرِيَّةُ")
+        assertEquals("ابراهيم والاثار المصريه", norm)
+    }
 }
 

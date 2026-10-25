@@ -3,7 +3,9 @@ package com.example.firebase
 import android.app.Activity
 import android.content.Context
 import android.util.Log
+import androidx.credentials.ClearCredentialStateRequest
 import androidx.credentials.CredentialManager
+import androidx.credentials.CustomCredential
 import androidx.credentials.GetCredentialRequest
 import androidx.credentials.exceptions.GetCredentialCancellationException
 import com.example.R
@@ -12,6 +14,9 @@ import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.GoogleAuthProvider
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -34,6 +39,7 @@ class FirebaseAuthManager(private val context: Context) {
     }
 
     private val auth = FirebaseAuth.getInstance()
+    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val _currentUser = MutableStateFlow<FirebaseUser?>(auth.currentUser)
     val currentUser: StateFlow<FirebaseUser?> = _currentUser.asStateFlow()
@@ -60,6 +66,9 @@ class FirebaseAuthManager(private val context: Context) {
 
             val result = credentialManager.getCredential(activity, request)
             val credential = result.credential
+            if (credential !is CustomCredential || credential.type != GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
+                throw IllegalStateException("Unexpected credential type: ${credential.type}")
+            }
             val googleIdToken = GoogleIdTokenCredential.createFrom(credential.data).idToken
             val firebaseCredential = GoogleAuthProvider.getCredential(googleIdToken, null)
             val authResult = auth.signInWithCredential(firebaseCredential).await()
@@ -67,7 +76,7 @@ class FirebaseAuthManager(private val context: Context) {
 
             Result.success(user)
         } catch (e: GetCredentialCancellationException) {
-            Log.w(TAG, "Sign in cancelled by user", e)
+            Log.w(TAG, "Sign in cancelled by user: ${e.message}", e)
             Result.failure(e)
         } catch (e: Exception) {
             Log.e(TAG, "Sign in failed with exception", e)
@@ -77,10 +86,10 @@ class FirebaseAuthManager(private val context: Context) {
 
     fun signOut() {
         auth.signOut()
-        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch {
+        ioScope.launch {
             try {
                 CredentialManager.create(context)
-                    .clearCredentialState(androidx.credentials.ClearCredentialStateRequest())
+                    .clearCredentialState(ClearCredentialStateRequest())
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to clear credential state", e)
             }

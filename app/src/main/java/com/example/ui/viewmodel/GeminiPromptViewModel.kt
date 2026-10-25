@@ -3,6 +3,8 @@ package com.example.ui.viewmodel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.BuildConfig
+import com.example.security.SecureKeyStoreHelper
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -46,7 +48,7 @@ data class PromptHistoryItem(
     val id: String = UUID.randomUUID().toString(),
     val prompt: String,
     val response: String,
-    val model: String = "gemini-2.0-flash",
+    val model: String = "gemini-3.1-flash-lite",
     val timestamp: Long = System.currentTimeMillis()
 )
 
@@ -181,9 +183,12 @@ open class GeminiPromptViewModel(
 
                 // Clear input after successful dispatch
                 _promptInput.value = ""
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
+                val safeMsg = SecureKeyStoreHelper.redactSecret(e.localizedMessage, apiKey)
                 _uiState.value = GeminiPromptUiState.Error(
-                    message = e.localizedMessage ?: "Failed to receive a response from Gemini API."
+                    message = safeMsg.ifBlank { "Failed to receive a response from Gemini API." }
                 )
             }
         }
@@ -235,21 +240,8 @@ open class GeminiPromptViewModel(
             "gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.0-flash-lite", "gemini-2.5-flash" -> "gemini-3.1-flash-lite"
             else -> if (model.isNotBlank()) model else "gemini-3.1-flash-lite"
         }
-        val endpointUrl = "$BASE_URL/$targetModel:generateContent?key=$apiKey"
+        val endpointUrl = "$BASE_URL/$targetModel:generateContent"
 
-        // Construct Gemini JSON payload:
-        // {
-        //   "contents": [
-        //     {
-        //       "role": "user",
-        //       "parts": [{ "text": "..." }]
-        //     }
-        //   ],
-        //   "generationConfig": {
-        //     "temperature": 0.7,
-        //     "maxOutputTokens": 2048
-        //   }
-        // }
         val requestJson = JSONObject().apply {
             val contentsArray = JSONArray().apply {
                 val userContent = JSONObject().apply {
@@ -279,6 +271,7 @@ open class GeminiPromptViewModel(
             .url(endpointUrl)
             .post(requestBody)
             .addHeader("Content-Type", "application/json")
+            .addHeader("x-goog-api-key", apiKey)
             .build()
 
         val response = okHttpClient.newCall(request).execute()

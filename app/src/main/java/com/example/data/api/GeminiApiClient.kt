@@ -10,6 +10,7 @@ import com.example.data.model.FileSearchDefaults
 import com.example.data.model.GroundingSource
 import com.example.data.model.MessageSender
 import com.example.data.model.RagDocument
+import com.example.security.SecureKeyStoreHelper
 import com.example.service.VertexGeminiFileSearchService
 import com.google.firebase.Firebase
 import com.google.firebase.ai.ai
@@ -395,7 +396,13 @@ If you have not yet configured a personal Google AI Studio key, open the **Side 
             }
         }
 
-        return GeminiResult(text = reply, isError = false)
+        val offlineCitations = matchedCloudChunks.map { doc ->
+            GroundingSource(
+                title = doc.title,
+                uri = "firestore://rag_chunks/${doc.id.removePrefix("cloud_chunk_")}"
+            )
+        }
+        return GeminiResult(text = reply, groundingSources = offlineCitations, isError = false)
     }
 
     internal fun buildRequestBody(
@@ -628,7 +635,11 @@ If you have not yet configured a personal Google AI Studio key, open the **Side 
 
             val resultText = accumulated.toString().trim()
             if (resultText.isNotEmpty()) {
-                val citations = cloudPdfDocs.map { GroundingSource(title = it.title, uri = it.gcsUri) }
+                val pdfCitations = cloudPdfDocs.map { GroundingSource(title = it.title, uri = it.gcsUri) }
+                val chunkCitations = plainDocs.filter { it.id.startsWith("cloud_chunk_") }.map {
+                    GroundingSource(title = it.title, uri = "firestore://rag_chunks/${it.id.removePrefix("cloud_chunk_")}")
+                }
+                val citations = (pdfCitations + chunkCitations).distinctBy { "${it.title}|${it.uri}" }
                 GeminiResult(text = resultText, groundingSources = citations, isError = false)
             } else {
                 null
@@ -706,7 +717,11 @@ If you have not yet configured a personal Google AI Studio key, open the **Side 
                 generativeModel.generateContent(input)
             }
             val text = response.text?.trim()?.ifEmpty { null } ?: return null
-            val citations = cloudPdfDocs.map { GroundingSource(title = it.title, uri = it.gcsUri) }
+            val pdfCitations = cloudPdfDocs.map { GroundingSource(title = it.title, uri = it.gcsUri) }
+            val chunkCitations = plainDocs.filter { it.id.startsWith("cloud_chunk_") }.map {
+                GroundingSource(title = it.title, uri = "firestore://rag_chunks/${it.id.removePrefix("cloud_chunk_")}")
+            }
+            val citations = (pdfCitations + chunkCitations).distinctBy { "${it.title}|${it.uri}" }
             GeminiResult(text = text, groundingSources = citations, isError = false)
         } catch (e: CancellationException) {
             throw e
@@ -735,13 +750,13 @@ If you have not yet configured a personal Google AI Studio key, open the **Side 
             gemPersona = gemPersona,
             appLanguage = appLanguage,
             isVoiceCall = isVoiceCall,
-            ragContext = emptyList()
+            ragContext = ragContext.filter { it.isCloudPdfBook }
         )
 
         val apiKey = getEffectiveApiKey(customApiKey)
         var lastErrorMessage = ""
 
-        // 1. If API key is present (via .env or custom entry), stream directly via REST SSE
+        // 1. If API key is present (via .env or custom entry), stream directly via REST SSE using header auth only
         if (apiKey.isNotBlank()) {
             val mediaType = "application/json; charset=utf-8".toMediaType()
             var trySearch = enableSearchGrounding && !isVoiceCall
@@ -761,7 +776,7 @@ If you have not yet configured a personal Google AI Studio key, open the **Side 
                     gemPersona = gemPersona
                 )
 
-                val endpoint = "$BASE_URL/$targetModel:streamGenerateContent?alt=sse&key=$apiKey"
+                val endpoint = "$BASE_URL/$targetModel:streamGenerateContent?alt=sse"
                 val httpRequest = Request.Builder()
                     .url(endpoint)
                     .addHeader("x-goog-api-key", apiKey)
@@ -838,8 +853,10 @@ If you have not yet configured a personal Google AI Studio key, open the **Side 
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    Log.w(TAG, "Stream exception on $modelName: ${e.message}")
-                    lastErrorMessage = e.localizedMessage ?: "Connection error"
+                    val safeMsg = SecureKeyStoreHelper.redactSecret(e.message, apiKey)
+                    Log.w(TAG, "Stream exception on $modelName: $safeMsg")
+                    lastErrorMessage = SecureKeyStoreHelper.redactSecret(e.localizedMessage, apiKey)
+                        .ifBlank { "Connection error" }
                 }
             }
         }
@@ -955,7 +972,7 @@ If you have not yet configured a personal Google AI Studio key, open the **Side 
             gemPersona = gemPersona,
             appLanguage = appLanguage,
             isVoiceCall = isVoiceCall,
-            ragContext = emptyList()
+            ragContext = ragContext.filter { it.isCloudPdfBook }
         )
 
         val apiKey = getEffectiveApiKey(customApiKey)
@@ -980,7 +997,7 @@ If you have not yet configured a personal Google AI Studio key, open the **Side 
                         gemPersona = gemPersona
                     )
 
-                    val endpoint = "$BASE_URL/$targetModel:generateContent?key=$apiKey"
+                    val endpoint = "$BASE_URL/$targetModel:generateContent"
                     val httpRequest = Request.Builder()
                         .url(endpoint)
                         .addHeader("x-goog-api-key", apiKey)
@@ -1037,8 +1054,10 @@ If you have not yet configured a personal Google AI Studio key, open the **Side 
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    Log.w(TAG, "Request to $modelName failed: ${e.message}")
-                    lastErrorMessage = e.localizedMessage ?: "Connection error"
+                    val safeMsg = SecureKeyStoreHelper.redactSecret(e.message, apiKey)
+                    Log.w(TAG, "Request to $modelName failed: $safeMsg")
+                    lastErrorMessage = SecureKeyStoreHelper.redactSecret(e.localizedMessage, apiKey)
+                        .ifBlank { "Connection error" }
                 }
             }
         }

@@ -245,3 +245,89 @@ test("Cross-user isolation: non-owner cannot read private RAG docs or modify/del
   );
   await assertFails(bobDb.collection("rag_books").doc("book_pharaonic_02").delete());
 });
+
+test("Immutability guard: owner cannot mutate existing createdAt on user profile or chat session", async () => {
+  const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
+  const initialCreated = new Date(Date.now() - 10000);
+  const laterTs = new Date(Date.now() - 1000);
+
+  await assertSucceeds(
+    aliceDb.collection("users").doc(ALICE_UID).set({
+      uid: ALICE_UID,
+      displayName: "Dr. Alice",
+      createdAt: initialCreated,
+      lastActiveAt: initialCreated,
+    })
+  );
+
+  // Updating displayName/lastActiveAt without mutating createdAt succeeds
+  await assertSucceeds(
+    aliceDb.collection("users").doc(ALICE_UID).update({
+      displayName: "Prof. Alice",
+      lastActiveAt: laterTs,
+    })
+  );
+
+  // Mutating createdAt on existing profile is rejected
+  await assertFails(
+    aliceDb.collection("users").doc(ALICE_UID).update({
+      createdAt: laterTs,
+      lastActiveAt: laterTs,
+    })
+  );
+
+  const sessionRef = aliceDb.collection("users").doc(ALICE_UID).collection("sessions").doc("sess_imm_1");
+  await assertSucceeds(
+    sessionRef.set({
+      id: "sess_imm_1",
+      userId: ALICE_UID,
+      title: "عنوان مبدئي",
+      createdAt: initialCreated,
+      updatedAt: initialCreated,
+    })
+  );
+
+  // Updating title and updatedAt succeeds
+  await assertSucceeds(
+    sessionRef.update({
+      title: "عنوان محدث",
+      updatedAt: laterTs,
+    })
+  );
+
+  // Mutating createdAt on existing session is rejected
+  await assertFails(
+    sessionRef.update({
+      createdAt: laterTs,
+      updatedAt: laterTs,
+    })
+  );
+});
+
+test("Private RAG query alignment: owner can list own private books/folders/chunks while non-owner cannot", async () => {
+  const aliceDb = testEnv.authenticatedContext(ALICE_UID).firestore();
+  const bobDb = testEnv.authenticatedContext(BOB_UID).firestore();
+
+  await aliceDb.collection("rag_books").doc("book_pharaonic_02").set(validBook(ALICE_UID, false));
+  await aliceDb.collection("rag_folders").doc("book_pharaonic_02_f05").set(validFolder(ALICE_UID, false));
+  await aliceDb.collection("rag_chunks").doc("book_pharaonic_02_f05_c01").set(validChunk(ALICE_UID, false));
+
+  await assertSucceeds(
+    aliceDb.collection("rag_books").where("ownerId", "==", ALICE_UID).get()
+  );
+  await assertSucceeds(
+    aliceDb.collection("rag_folders").where("ownerId", "==", ALICE_UID).get()
+  );
+  await assertSucceeds(
+    aliceDb
+      .collection("rag_chunks")
+      .where("ownerId", "==", ALICE_UID)
+      .where("folderId", "==", "book_pharaonic_02_f05")
+      .get()
+  );
+
+  await assertFails(
+    bobDb.collection("rag_books").where("ownerId", "==", ALICE_UID).get()
+  );
+});
+

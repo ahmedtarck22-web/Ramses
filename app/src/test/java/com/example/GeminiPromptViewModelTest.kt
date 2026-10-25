@@ -16,6 +16,7 @@ import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -59,8 +60,8 @@ class GeminiPromptViewModelTest {
     @Test
     fun testSelectModel() {
         val viewModel = GeminiPromptViewModel()
-        viewModel.selectModel("gemini-1.5-flash")
-        assertEquals("gemini-1.5-flash", viewModel.selectedModel.value)
+        viewModel.selectModel("gemini-3.8-flash")
+        assertEquals("gemini-3.8-flash", viewModel.selectedModel.value)
     }
 
     @Test
@@ -93,10 +94,16 @@ class GeminiPromptViewModelTest {
             }
         """.trimIndent()
 
+        var capturedHeaderKey: String? = null
+        var capturedUrlQueryKey: String? = "UNSET"
+
         val mockClient = OkHttpClient.Builder()
             .addInterceptor { chain ->
+                val req = chain.request()
+                capturedHeaderKey = req.header("x-goog-api-key")
+                capturedUrlQueryKey = req.url.queryParameter("key")
                 Response.Builder()
-                    .request(chain.request())
+                    .request(req)
                     .protocol(Protocol.HTTP_1_1)
                     .code(200)
                     .message("OK")
@@ -122,6 +129,8 @@ class GeminiPromptViewModelTest {
         assertEquals("Who was Ramses II?", success.prompt)
         assertTrue(success.responseText.contains("Nineteenth Dynasty"))
         assertEquals(1, viewModel.promptHistory.value.size)
+        assertNull("API key must NEVER be passed as a URL query parameter", capturedUrlQueryKey)
+        assertTrue(!capturedHeaderKey.isNullOrBlank())
     }
 
     @Test

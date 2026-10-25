@@ -160,13 +160,13 @@ class PdfToCloudRagConverter(
                         throw IllegalArgumentException("ملف الـ PDF لا يحتوي على صفحات قابلة للقراءة.")
                     }
 
-                    // Sample evenly across huge PDFs if > 90 pages so each upload finishes within seconds,
-                    // or process sequential 6-page folders for standard books.
-                    val pageIndices = if (totalPageCount <= 72) {
+                    // Process sequential 6-page folders up to 96 pages, or sample evenly across larger books
+                    val isSampled = totalPageCount > 96
+                    val pageIndices = if (!isSampled) {
                         (0 until totalPageCount).toList()
                     } else {
-                        val step = (totalPageCount.toDouble() / 72.0).coerceAtLeast(1.0)
-                        (0 until 72).map { (it * step).toInt().coerceAtMost(totalPageCount - 1) }.distinct()
+                        val step = (totalPageCount.toDouble() / 96.0).coerceAtLeast(1.0)
+                        (0 until 96).map { (it * step).toInt().coerceAtMost(totalPageCount - 1) }.distinct()
                     }
 
                     val pageBatches = pageIndices.chunked(PAGES_PER_BATCH)
@@ -176,11 +176,12 @@ class PdfToCloudRagConverter(
                         onBatchProgress(bIdx + 1, pageBatches.size)
                         val firstPageNum = batchPages.first() + 1
                         val lastPageNum = batchPages.last() + 1
-                        val batchRangeLabel = if (firstPageNum == lastPageNum) {
-                            "ص $firstPageNum"
-                        } else {
-                            "ص $firstPageNum - $lastPageNum"
-                        }
+                        val isContiguous = batchPages.size == (lastPageNum - firstPageNum + 1)
+                        val batchRangeLabel = when {
+                            firstPageNum == lastPageNum -> "ص $firstPageNum"
+                            isContiguous -> "ص $firstPageNum - $lastPageNum"
+                            else -> "ص " + batchPages.joinToString("، ") { (it + 1).toString() }
+                        }.take(75)
 
                         val bitmaps = batchPages.map { pageIndex ->
                             renderer.openPage(pageIndex).use { page ->
@@ -195,56 +196,74 @@ class PdfToCloudRagConverter(
                         }
 
                         try {
-                            val response = withTimeout(60_000L) {
-                                structuredExtractorModel.generateContent(
-                                    content {
-                                        for ((idx, bmp) in bitmaps.withIndex()) {
-                                            text("صفحة رقم ${batchPages[idx] + 1} من كتاب «$bookTitle»:")
-                                            image(bmp)
-                                        }
-                                        text(
-                                            """
-                                            حلل هذه الصفحات ($batchRangeLabel) من كتاب «$bookTitle» بدقة علمية وتاريخية كاملة،
-                                            وحوّلها إلى مجلد موضوعي صغير (Small Folder) يضم فقرات معرفية (RAG Chunks) مفصلة باللغة العربية الفصحى السليمة،
-                                            مع ذكر أرقام الصفحات الدقيقة وأهم الكلمات المفتاحية والأسماء والتواريخ دون حذف المعلومات الجوهرية.
-                                            """.trimIndent()
+                            var parsed: JSONObject? = null
+                            var attempt = 0
+                            while (attempt < 2 && parsed == null) {
+                                attempt++
+                                try {
+                                    val response = withTimeout(60_000L) {
+                                        structuredExtractorModel.generateContent(
+                                            content {
+                                                for ((idx, bmp) in bitmaps.withIndex()) {
+                                                    text("صفحة رقم ${batchPages[idx] + 1} من كتاب «$bookTitle»:")
+                                                    image(bmp)
+                                                }
+                                                text(
+                                                    """
+                                                    حلل هذه الصفحات ($batchRangeLabel) من كتاب «$bookTitle» بدقة علمية وتاريخية كاملة،
+                                                    وحوّلها إلى مجلد موضوعي صغير (Small Folder) يضم فقرات معرفية (RAG Chunks) مفصلة باللغة العربية الفصحى السليمة،
+                                                    مع ذكر أرقام الصفحات الدقيقة الموضحة أعلاه وأهم الكلمات المفتاحية والأسماء والتواريخ دون حذف المعلومات الجوهرية.
+                                                    """.trimIndent()
+                                                )
+                                            }
                                         )
                                     }
-                                )
+                                    val rawJson = response.text ?: throw IllegalStateException("لم يُرجع النموذج بيانات JSON.")
+                                    parsed = JSONObject(rawJson)
+                                } catch (e: CancellationException) {
+                                    if (attempt >= 2) Log.w(TAG, "Batch ${bIdx + 1} timed out; continuing remaining batches", e)
+                                } catch (e: Exception) {
+                                    if (attempt >= 2) Log.w(TAG, "Batch ${bIdx + 1} extraction failed; continuing remaining batches", e)
+                                }
                             }
 
-                            val rawJson = response.text ?: throw IllegalStateException("لم يُرجع النموذج بيانات JSON.")
-                            val parsed = JSONObject(rawJson)
+                            if (parsed == null) continue
 
-                            val authorCand = parsed.optString("detectedBookAuthor", "").trim()
+                            val authorCand = parsed.optString("detectedBookAuthor", "").trim().take(190)
                             if (detectedAuthor.isBlank() && authorCand.isNotBlank()) {
                                 detectedAuthor = authorCand
                             }
-                            val catCand = parsed.optString("detectedEraCategory", "").trim()
+                            val catCand = parsed.optString("detectedEraCategory", "").trim().take(110)
                             if (bIdx == 0 && catCand.isNotBlank()) {
                                 detectedCategory = catCand
                             }
 
                             val folderId = "${bookSlug}_f${(bIdx + 1).toString().padStart(2, '0')}"
                             val folderTitle = parsed.optString("folderTitle", "المجلد ${bIdx + 1} ($batchRangeLabel)")
-                                .trim().ifBlank { "المجلد ${bIdx + 1}" }
-                            val topicSummary = parsed.optString("topicSummary", folderTitle).trim().ifBlank { folderTitle }
+                                .trim().ifBlank { "المجلد ${bIdx + 1}" }.take(290)
+                            val topicSummary = parsed.optString("topicSummary", folderTitle)
+                                .trim().ifBlank { folderTitle }.take(3900)
                             val folderKws = parsed.optJSONArray("keywords")?.let { arr ->
-                                (0 until arr.length()).mapNotNull { arr.optString(it)?.trim()?.takeIf { s -> s.isNotBlank() } }
+                                (0 until arr.length()).mapNotNull {
+                                    arr.optString(it)?.trim()?.take(95)?.takeIf { s -> s.isNotBlank() }
+                                }
                             } ?: emptyList()
                             bookKeywords.addAll(folderKws)
 
+                            val safeBookTitle = bookTitle.take(290)
                             val chunksJson = parsed.optJSONArray("chunks")
                             var folderChunkCount = 0
                             if (chunksJson != null && chunksJson.length() > 0) {
                                 for (c in 0 until chunksJson.length()) {
                                     val cObj = chunksJson.getJSONObject(c)
-                                    val cBody = cObj.optString("content", "").trim()
+                                    val cBody = cObj.optString("content", "").trim().take(24000)
                                     if (cBody.isBlank()) continue
-                                    val cTitle = cObj.optString("title", folderTitle).trim().ifBlank { folderTitle }
-                                    val cPages = cObj.optString("pageRange", batchRangeLabel).trim().ifBlank { batchRangeLabel }
+                                    val cTitle = cObj.optString("title", folderTitle).trim().ifBlank { folderTitle }.take(290)
+                                    val cPages = cObj.optString("pageRange", batchRangeLabel).trim().ifBlank { batchRangeLabel }.take(75)
                                     val cKws = cObj.optJSONArray("keywords")?.let { arr ->
-                                        (0 until arr.length()).mapNotNull { arr.optString(it)?.trim()?.takeIf { s -> s.isNotBlank() } }
+                                        (0 until arr.length()).mapNotNull {
+                                            arr.optString(it)?.trim()?.take(95)?.takeIf { s -> s.isNotBlank() }
+                                        }
                                     } ?: folderKws
 
                                     val chunkId = "${folderId}_c${globalChunkIdx.toString().padStart(3, '0')}"
@@ -253,7 +272,7 @@ class PdfToCloudRagConverter(
                                             docId = chunkId,
                                             chunkId = chunkId,
                                             bookId = bookSlug,
-                                            bookTitle = bookTitle,
+                                            bookTitle = safeBookTitle,
                                             folderId = folderId,
                                             folderTitle = folderTitle,
                                             isShared = true,
@@ -275,11 +294,11 @@ class PdfToCloudRagConverter(
                                         docId = folderId,
                                         folderId = folderId,
                                         bookId = bookSlug,
-                                        bookTitle = bookTitle,
+                                        bookTitle = safeBookTitle,
                                         isShared = true,
-                                        folderIndex = bIdx + 1,
+                                        folderIndex = folders.size + 1,
                                         folderTitle = folderTitle,
-                                        category = detectedCategory,
+                                        category = detectedCategory.take(110),
                                         pageRange = batchRangeLabel,
                                         topicSummary = topicSummary,
                                         chunkCount = folderChunkCount,
@@ -303,14 +322,14 @@ class PdfToCloudRagConverter(
                 docId = bookSlug,
                 bookId = bookSlug,
                 isShared = true,
-                title = bookTitle,
-                author = detectedAuthor,
-                eraCategory = detectedCategory,
-                summary = "كتاب محوّل تلقائياً إلى ${folders.size} مجلدات صغيرة و${chunks.size} فقرة RAG: $summaryText",
+                title = bookTitle.take(290),
+                author = detectedAuthor.take(190),
+                eraCategory = detectedCategory.take(110),
+                summary = "كتاب محوّل تلقائياً إلى ${folders.size} مجلدات صغيرة و${chunks.size} فقرة RAG: $summaryText".take(2900),
                 pageCount = totalPageCount,
                 folderCount = folders.size,
                 chunkCount = chunks.size,
-                keywords = bookKeywords.take(35).toList()
+                keywords = bookKeywords.map { it.take(95) }.take(35)
             )
             return SeedRagBookBundle(book = book, folders = folders, chunks = chunks)
         } finally {

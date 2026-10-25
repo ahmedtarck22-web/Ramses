@@ -17,6 +17,7 @@ import com.example.BuildConfig
 import com.example.data.model.AppLanguage
 import com.example.data.model.RagDocument
 import com.example.data.model.VoiceCallState
+import com.example.security.SecureKeyStoreHelper
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -257,9 +258,9 @@ class GeminiLiveWebSocketClient(
         _voiceState.value = VoiceCallState.THINKING
         isSetupComplete.set(false)
 
-        val wsUrl = "$WS_ENDPOINT?key=$currentApiKey"
         val request = Request.Builder()
-            .url(wsUrl)
+            .url(WS_ENDPOINT)
+            .addHeader("x-goog-api-key", currentApiKey)
             .build()
 
         webSocket = wsOkHttpClient.newWebSocket(request, object : WebSocketListener() {
@@ -298,7 +299,8 @@ class GeminiLiveWebSocketClient(
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                Log.e(TAG, "WebSocket failure on $modelId: ${t.message}")
+                val safeErr = SecureKeyStoreHelper.redactSecret(t.message, currentApiKey)
+                Log.e(TAG, "WebSocket failure on $modelId: $safeErr")
                 if (!isSessionActive.get()) return
                 if (!isSetupComplete.get() && index + 1 < LIVE_CANDIDATE_MODELS.size) {
                     scope.launch {
@@ -307,7 +309,10 @@ class GeminiLiveWebSocketClient(
                 } else {
                     restoreAudioMode()
                     _connectionStatus.value = LiveConnectionStatus.ERROR
-                    onFallbackRequired?.invoke(t.localizedMessage ?: "WebSocket connection failed")
+                    onFallbackRequired?.invoke(
+                        SecureKeyStoreHelper.redactSecret(t.localizedMessage, currentApiKey)
+                            .ifBlank { "WebSocket connection failed" }
+                    )
                 }
             }
         })

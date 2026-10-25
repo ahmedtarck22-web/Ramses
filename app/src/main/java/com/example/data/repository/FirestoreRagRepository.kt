@@ -50,8 +50,37 @@ class FirestoreRagRepository(
             "عايز", "اعرف", "the", "of", "and", "in", "to", "what", "who", "how", "tell", "me", "about"
         )
 
+        private val DIACRITICS_REGEX = Regex("[\u064B-\u065F\u0670\u0640]")
+        private val ALEF_REGEX = Regex("[أإآٱ]")
+        private val NON_ALNUM_REGEX = Regex("[^\\p{L}\\p{N}\\s]")
+        private val WHITESPACE_REGEX = Regex("\\s+")
+
+        private data class IndexedFolder(
+            val folder: CloudRagFolder,
+            val titleNorm: String,
+            val summaryNorm: String,
+            val bookNorm: String,
+            val kwNorm: List<String>,
+            val stems: Set<String>,
+            val trigrams: Set<String>
+        )
+
+        private data class IndexedChunk(
+            val chunk: CloudRagChunk,
+            val titleNorm: String,
+            val contentNorm: String,
+            val kwNorm: List<String>,
+            val stems: Set<String>
+        )
+
         @Volatile
         private var cachedSeedBundles: List<SeedRagBookBundle>? = null
+
+        @Volatile
+        private var cachedSeedFolderIndex: Map<String, IndexedFolder>? = null
+
+        @Volatile
+        private var cachedSeedChunkIndexByFolder: Map<String, List<IndexedChunk>>? = null
 
         private fun decodePossiblyGzippedUtf8(rawStream: InputStream): String {
             val buffered = BufferedInputStream(rawStream)
@@ -64,6 +93,36 @@ class FirestoreRagRepository(
             return effectiveStream.use { stream ->
                 stream.bufferedReader(Charsets.UTF_8).readText()
             }
+        }
+
+        private fun indexFolder(folder: CloudRagFolder): IndexedFolder {
+            val titleNorm = normalizeSearchText(folder.folderTitle)
+            val summaryNorm = normalizeSearchText(folder.topicSummary)
+            val bookNorm = normalizeSearchText("${folder.bookTitle} ${folder.category}")
+            val kwNorm = folder.keywords.map { normalizeSearchText(it) }
+            val combined = "$titleNorm $summaryNorm ${kwNorm.joinToString(" ")} $bookNorm"
+            return IndexedFolder(
+                folder = folder,
+                titleNorm = titleNorm,
+                summaryNorm = summaryNorm,
+                bookNorm = bookNorm,
+                kwNorm = kwNorm,
+                stems = extractSearchStems(combined),
+                trigrams = buildCharTrigrams("$titleNorm ${kwNorm.joinToString(" ")}")
+            )
+        }
+
+        private fun indexChunk(chunk: CloudRagChunk): IndexedChunk {
+            val titleNorm = normalizeSearchText(chunk.title)
+            val contentNorm = normalizeSearchText(chunk.content)
+            val kwNorm = chunk.keywords.map { normalizeSearchText(it) }
+            return IndexedChunk(
+                chunk = chunk,
+                titleNorm = titleNorm,
+                contentNorm = contentNorm,
+                kwNorm = kwNorm,
+                stems = extractSearchStems("$titleNorm ${kwNorm.joinToString(" ")} $contentNorm")
+            )
         }
 
         fun loadBundledFiveBooks(context: Context?): List<SeedRagBookBundle> {
@@ -144,6 +203,10 @@ class FirestoreRagRepository(
 
                         parsed.add(SeedRagBookBundle(book = book, folders = folders, chunks = chunks))
                     }
+                    cachedSeedFolderIndex = parsed.flatMap { it.folders }
+                        .associate { it.folderId to indexFolder(it) }
+                    cachedSeedChunkIndexByFolder = parsed.flatMap { it.chunks }
+                        .groupBy({ it.folderId }, { indexChunk(it) })
                     cachedSeedBundles = parsed
                     parsed
                 } catch (e: Exception) {
@@ -154,17 +217,39 @@ class FirestoreRagRepository(
         }
 
         fun normalizeSearchText(input: String): String {
+            if (input.isBlank()) return ""
             return input
                 .lowercase()
-                .replace(Regex("[\u064B-\u065F\u0670\u0640]"), "")
-                .replace(Regex("[أإآٱ]"), "ا")
+                .replace(DIACRITICS_REGEX, "")
+                .replace(ALEF_REGEX, "ا")
                 .replace('ة', 'ه')
                 .replace('ى', 'ي')
                 .replace('ؤ', 'و')
                 .replace('ئ', 'ي')
-                .replace(Regex("[^\\p{L}\\p{N}\\s]"), " ")
-                .replace(Regex("\\s+"), " ")
+                .replace(NON_ALNUM_REGEX, " ")
+                .replace(WHITESPACE_REGEX, " ")
                 .trim()
+        }
+
+        fun stemArabicToken(rawToken: String): String {
+            var t = rawToken
+            when {
+                t.length >= 5 && (t.startsWith("وال") || t.startsWith("بال") || t.startsWith("كال") || t.startsWith("فال")) ->
+                    t = t.drop(3)
+                t.length >= 4 && (t.startsWith("ال") || t.startsWith("لل")) ->
+                    t = t.drop(2)
+                t.length >= 5 && (t.startsWith("و") || t.startsWith("ف") || t.startsWith("ب") || t.startsWith("ل")) ->
+                    t = t.drop(1)
+            }
+            when {
+                t.length >= 6 && (t.endsWith("ات") || t.endsWith("ون") || t.endsWith("ين") || t.endsWith("ها") || t.endsWith("هم") || t.endsWith("كم") || t.endsWith("هن") || t.endsWith("ان")) ->
+                    t = t.dropLast(2)
+                t.length >= 5 && (t.endsWith("يه") || t.endsWith("ها")) ->
+                    t = t.dropLast(2)
+                t.length >= 5 && (t.endsWith("ه") || t.endsWith("ي")) ->
+                    t = t.dropLast(1)
+            }
+            return t
         }
 
         fun extractSearchTokens(input: String): List<String> {
@@ -182,6 +267,45 @@ class FirestoreRagRepository(
                 }
                 .filter { it.length >= 2 && it !in ARABIC_STOPWORDS }
                 .distinct()
+        }
+
+        fun extractSearchStems(input: String): Set<String> {
+            return extractSearchTokens(input)
+                .map { stemArabicToken(it) }
+                .filter { it.length >= 2 && it !in ARABIC_STOPWORDS }
+                .toSet()
+        }
+
+        private fun buildCharTrigrams(normalized: String): Set<String> {
+            val compact = normalized.replace(" ", "")
+            if (compact.length < 3) return if (compact.isEmpty()) emptySet() else setOf(compact)
+            val result = HashSet<String>(compact.length)
+            for (i in 0..compact.length - 3) {
+                result.add(compact.substring(i, i + 3))
+            }
+            return result
+        }
+
+        private fun diceSimilarity(a: Set<String>, b: Set<String>): Double {
+            if (a.isEmpty() || b.isEmpty()) return 0.0
+            var overlap = 0
+            val smaller = if (a.size <= b.size) a else b
+            val larger = if (a.size <= b.size) b else a
+            for (gram in smaller) {
+                if (gram in larger) overlap++
+            }
+            return (2.0 * overlap) / (a.size + b.size)
+        }
+
+        private fun countOccurrences(haystack: String, needle: String): Int {
+            if (haystack.isEmpty() || needle.isEmpty()) return 0
+            var count = 0
+            var idx = haystack.indexOf(needle, 0)
+            while (idx >= 0) {
+                count++
+                idx = haystack.indexOf(needle, idx + needle.length)
+            }
+            return count
         }
     }
 
@@ -218,11 +342,27 @@ class FirestoreRagRepository(
 
     suspend fun getSharedBooks(): Result<List<CloudRagBook>> {
         return try {
-            val snap = db.collection("rag_books")
+            val sharedSnap = db.collection("rag_books")
                 .whereEqualTo("isShared", true)
                 .get()
                 .await()
-            Result.success(snap.documents.map { CloudRagBook.fromSnapshot(it) })
+            val sharedList = sharedSnap.documents.map { CloudRagBook.fromSnapshot(it) }
+            val uid = authProvider()
+            val ownedList = if (!uid.isNullOrBlank()) {
+                try {
+                    db.collection("rag_books")
+                        .whereEqualTo("ownerId", uid)
+                        .get()
+                        .await()
+                        .documents
+                        .map { CloudRagBook.fromSnapshot(it) }
+                } catch (_: Exception) {
+                    emptyList()
+                }
+            } else {
+                emptyList()
+            }
+            Result.success((sharedList + ownedList).distinctBy { it.bookId })
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -233,11 +373,27 @@ class FirestoreRagRepository(
 
     suspend fun getSharedFolders(): Result<List<CloudRagFolder>> {
         return try {
-            val snap = db.collection("rag_folders")
+            val sharedSnap = db.collection("rag_folders")
                 .whereEqualTo("isShared", true)
                 .get()
                 .await()
-            Result.success(snap.documents.map { CloudRagFolder.fromSnapshot(it) })
+            val sharedList = sharedSnap.documents.map { CloudRagFolder.fromSnapshot(it) }
+            val uid = authProvider()
+            val ownedList = if (!uid.isNullOrBlank()) {
+                try {
+                    db.collection("rag_folders")
+                        .whereEqualTo("ownerId", uid)
+                        .get()
+                        .await()
+                        .documents
+                        .map { CloudRagFolder.fromSnapshot(it) }
+                } catch (_: Exception) {
+                    emptyList()
+                }
+            } else {
+                emptyList()
+            }
+            Result.success((sharedList + ownedList).distinctBy { it.folderId })
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -260,13 +416,30 @@ class FirestoreRagRepository(
 
     suspend fun getChunksForFolder(folderId: String): Result<List<CloudRagChunk>> {
         return try {
-            val snap = db.collection("rag_chunks")
+            val sharedSnap = db.collection("rag_chunks")
                 .whereEqualTo("isShared", true)
                 .whereEqualTo("folderId", folderId)
                 .get()
                 .await()
-            val sorted = snap.documents
-                .map { CloudRagChunk.fromSnapshot(it) }
+            val sharedChunks = sharedSnap.documents.map { CloudRagChunk.fromSnapshot(it) }
+            val uid = authProvider()
+            val ownedChunks = if (!uid.isNullOrBlank()) {
+                try {
+                    db.collection("rag_chunks")
+                        .whereEqualTo("ownerId", uid)
+                        .whereEqualTo("folderId", folderId)
+                        .get()
+                        .await()
+                        .documents
+                        .map { CloudRagChunk.fromSnapshot(it) }
+                } catch (_: Exception) {
+                    emptyList()
+                }
+            } else {
+                emptyList()
+            }
+            val sorted = (sharedChunks + ownedChunks)
+                .distinctBy { it.chunkId }
                 .sortedBy { it.chunkIndex }
             Result.success(sorted)
         } catch (e: CancellationException) {
@@ -346,9 +519,9 @@ class FirestoreRagRepository(
     }
 
     /**
-     * Two-stage Small-Folder -> Cited-Chunk RAG retrieval.
-     * Queries live Cloud Firestore when signed in (covering all 5 books + up to 1,000+ uploaded PDF books),
-     * and falls back seamlessly to the compressed 5-book seed index if offline or unauthenticated.
+     * Two-stage Small-Folder -> Cited-Chunk hybrid lexical + Arabic morphological stem + IDF + 3-gram RAG retrieval.
+     * Queries live Cloud Firestore when signed in (giving live Cloud folders priority over bundled seed data
+     * and including both shared and owner-private books), falling back seamlessly to the pre-indexed 5-book seed.
      */
     suspend fun retrieveRelevantPassages(
         query: String,
@@ -357,12 +530,14 @@ class FirestoreRagRepository(
         topChunksLimit: Int = 5
     ): List<RetrievedRagPassage> = withContext(Dispatchers.IO) {
         val tokens = extractSearchTokens(query)
-        if (tokens.isEmpty()) return@withContext emptyList()
+        val queryStems = extractSearchStems(query)
         val normQuery = normalizeSearchText(query)
+        if (tokens.isEmpty() && normQuery.length < 3) return@withContext emptyList()
+        val queryTrigrams = buildCharTrigrams(normQuery)
 
-        val seedBundles = loadBundledFiveBooks()
-        val seedFoldersMap = seedBundles.flatMap { it.folders }.associateBy { it.folderId }
-        val seedChunksByFolder = seedBundles.flatMap { it.chunks }.groupBy { it.folderId }
+        loadBundledFiveBooks()
+        val seedFolderIdxMap = cachedSeedFolderIndex.orEmpty()
+        val seedChunksIdxByFolder = cachedSeedChunkIndexByFolder.orEmpty()
 
         val isSignedIn = authProvider() != null
         val cloudFolders = if (cachedCloudFolders.isNotEmpty()) {
@@ -373,29 +548,60 @@ class FirestoreRagRepository(
             emptyList()
         }
 
-        // Merge cloud folders (including newly uploaded PDF books) with seed folders
-        val allFolders = (cloudFolders.associateBy { it.folderId } + seedFoldersMap).values.toList()
-        if (allFolders.isEmpty()) return@withContext emptyList()
+        // Priority fix: live Cloud folders override static seed folders with matching folderId
+        val mergedIndexedFolders: List<IndexedFolder> = buildMap {
+            putAll(seedFolderIdxMap)
+            for (cf in cloudFolders) {
+                val cachedSeed = seedFolderIdxMap[cf.folderId]
+                if (cachedSeed != null &&
+                    cachedSeed.folder.folderTitle == cf.folderTitle &&
+                    cachedSeed.folder.topicSummary == cf.topicSummary
+                ) {
+                    put(cf.folderId, cachedSeed.copy(folder = cf))
+                } else {
+                    put(cf.folderId, indexFolder(cf))
+                }
+            }
+        }.values.toList()
+
+        if (mergedIndexedFolders.isEmpty()) return@withContext emptyList()
+
+        // Compute inverse document frequency (IDF) weights per query token across folders
+        val totalFolders = mergedIndexedFolders.size.coerceAtLeast(1)
+        val tokenIdf = tokens.associateWith { tok ->
+            val df = mergedIndexedFolders.count { idxF ->
+                idxF.titleNorm.contains(tok) ||
+                    idxF.summaryNorm.contains(tok) ||
+                    idxF.kwNorm.any { it.contains(tok) }
+            }
+            1.0 + kotlin.math.ln((totalFolders + 1.0) / (df + 1.0))
+        }
 
         // Stage 1: Score & rank small thematic folders
-        val rankedFolders = allFolders
-            .map { folder ->
-                val titleNorm = normalizeSearchText(folder.folderTitle)
-                val summaryNorm = normalizeSearchText(folder.topicSummary)
-                val bookNorm = normalizeSearchText(folder.bookTitle + " " + folder.category)
-                val kwNorm = folder.keywords.map { normalizeSearchText(it) }
-
+        val rankedFolders = mergedIndexedFolders
+            .map { idxF ->
                 var score = 0.0
-                if (normQuery.length >= 4 && (titleNorm.contains(normQuery) || summaryNorm.contains(normQuery))) {
-                    score += 8.0
+                if (normQuery.length >= 4 && (idxF.titleNorm.contains(normQuery) || idxF.summaryNorm.contains(normQuery))) {
+                    score += 8.5
                 }
                 for (tok in tokens) {
-                    if (titleNorm.contains(tok)) score += 3.5
-                    if (kwNorm.any { it.contains(tok) || tok.contains(it) }) score += 3.2
-                    if (summaryNorm.contains(tok)) score += 1.8
-                    if (bookNorm.contains(tok)) score += 1.2
+                    val idf = tokenIdf[tok] ?: 1.0
+                    if (idxF.titleNorm.contains(tok)) score += 3.2 * idf
+                    if (idxF.kwNorm.any { it.contains(tok) || tok.contains(it) }) score += 2.9 * idf
+                    if (idxF.summaryNorm.contains(tok)) score += 1.6 * idf
+                    if (idxF.bookNorm.contains(tok)) score += 1.0 * idf
                 }
-                folder to score
+                // Arabic light-stem morphological overlap (catches plurals/possessives/clitics)
+                val stemHits = queryStems.count { it in idxF.stems }
+                if (stemHits > 0) {
+                    score += stemHits * 2.1
+                }
+                // Character 3-gram similarity fallback for paraphrased/spelling variants
+                val trigramSim = diceSimilarity(queryTrigrams, idxF.trigrams)
+                if (trigramSim >= 0.18) {
+                    score += trigramSim * 4.5
+                }
+                idxF.folder to score
             }
             .filter { it.second > 0.0 }
             .sortedByDescending { it.second }
@@ -406,33 +612,45 @@ class FirestoreRagRepository(
         // Stage 2: Fetch & score chunks only from the winning small folders
         val candidateChunks = mutableListOf<Pair<CloudRagChunk, Double>>()
         for ((folder, folderScore) in rankedFolders) {
-            val chunksInFolder = if (isSignedIn) {
-                getChunksForFolder(folder.folderId).getOrNull()
-                    ?.takeIf { it.isNotEmpty() }
-                    ?: seedChunksByFolder[folder.folderId].orEmpty()
+            val indexedChunks: List<IndexedChunk> = if (isSignedIn) {
+                val cloudChunks = getChunksForFolder(folder.folderId).getOrNull()
+                if (!cloudChunks.isNullOrEmpty()) {
+                    val seedIndexed = seedChunksIdxByFolder[folder.folderId]?.associateBy { it.chunk.chunkId }.orEmpty()
+                    cloudChunks.map { cc ->
+                        val cached = seedIndexed[cc.chunkId]
+                        if (cached != null && cached.chunk.content == cc.content && cached.chunk.title == cc.title) {
+                            cached.copy(chunk = cc)
+                        } else {
+                            indexChunk(cc)
+                        }
+                    }
+                } else {
+                    seedChunksIdxByFolder[folder.folderId].orEmpty()
+                }
             } else {
-                seedChunksByFolder[folder.folderId].orEmpty()
+                seedChunksIdxByFolder[folder.folderId].orEmpty()
             }
 
-            for (chunk in chunksInFolder) {
-                val cTitleNorm = normalizeSearchText(chunk.title)
-                val cContentNorm = normalizeSearchText(chunk.content)
-                val cKwNorm = chunk.keywords.map { normalizeSearchText(it) }
-
+            for (idxC in indexedChunks) {
                 var cScore = folderScore * 0.35
-                if (normQuery.length >= 4 && cContentNorm.contains(normQuery)) {
-                    cScore += 9.0
+                if (normQuery.length >= 4 && idxC.contentNorm.contains(normQuery)) {
+                    cScore += 9.5
                 }
                 for (tok in tokens) {
-                    if (cTitleNorm.contains(tok)) cScore += 3.0
-                    if (cKwNorm.any { it.contains(tok) }) cScore += 2.5
-                    val occurrences = Regex(Regex.escape(tok)).findAll(cContentNorm).count()
+                    val idf = tokenIdf[tok] ?: 1.0
+                    if (idxC.titleNorm.contains(tok)) cScore += 3.0 * idf
+                    if (idxC.kwNorm.any { it.contains(tok) }) cScore += 2.5 * idf
+                    val occurrences = countOccurrences(idxC.contentNorm, tok)
                     if (occurrences > 0) {
-                        cScore += minOf(occurrences * 1.6, 6.4)
+                        cScore += minOf(occurrences * 1.6 * idf, 7.5)
                     }
                 }
+                val chunkStemHits = queryStems.count { it in idxC.stems }
+                if (chunkStemHits > 0) {
+                    cScore += chunkStemHits * 1.8
+                }
                 if (cScore > 1.2) {
-                    candidateChunks.add(chunk to cScore)
+                    candidateChunks.add(idxC.chunk to cScore)
                 }
             }
         }

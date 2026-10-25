@@ -74,6 +74,7 @@ service cloud.firestore {
       allow create: if isOwner(userId) && isValidId(userId) && incoming().uid == userId && isValidUserProfile(incoming());
       allow update: if isOwner(userId) && isValidId(userId) && isValidUserProfile(incoming()) &&
                        incoming().uid == existing().uid &&
+                       (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt) &&
                        incoming().diff(existing()).affectedKeys().hasOnly(['email', 'displayName', 'photoUrl', 'createdAt', 'lastActiveAt']);
       allow delete: if isOwner(userId) && isValidId(userId);
 
@@ -84,6 +85,7 @@ service cloud.firestore {
         allow update: if isOwner(userId) && isValidId(sessionId) && isValidChatSession(incoming(), userId) &&
                          incoming().id == existing().id &&
                          incoming().userId == existing().userId &&
+                         (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt) &&
                          incoming().diff(existing()).affectedKeys().hasOnly(['title', 'createdAt', 'updatedAt']);
         allow delete: if isOwner(userId) && isValidId(sessionId);
 

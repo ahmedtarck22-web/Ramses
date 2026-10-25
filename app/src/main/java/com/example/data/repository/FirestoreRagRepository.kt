@@ -20,6 +20,8 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import java.io.BufferedInputStream
+import java.io.InputStream
 import java.util.zip.GZIPInputStream
 
 class FirestoreRagRepository(
@@ -36,8 +38,9 @@ class FirestoreRagRepository(
 
     companion object {
         private const val TAG = "FirestoreRagRepo"
-        private const val SEED_ASSET_PATH = "rag/ramses_5books_rag.json.gz"
+        const val SEED_ASSET_PATH = "rag/ramses_5books_rag.pack"
         private const val MAX_BATCH_OPS = 380
+        private val SEED_LOCK = Any()
 
         private val ARABIC_STOPWORDS = setOf(
             "من", "في", "فى", "على", "علي", "الى", "إلى", "عن", "مع", "هو", "هي",
@@ -49,6 +52,106 @@ class FirestoreRagRepository(
 
         @Volatile
         private var cachedSeedBundles: List<SeedRagBookBundle>? = null
+
+        private fun decodePossiblyGzippedUtf8(rawStream: InputStream): String {
+            val buffered = BufferedInputStream(rawStream)
+            buffered.mark(2)
+            val b0 = buffered.read()
+            val b1 = buffered.read()
+            buffered.reset()
+            val isGzip = (b0 == 0x1f && b1 == 0x8b)
+            val effectiveStream: InputStream = if (isGzip) GZIPInputStream(buffered) else buffered
+            return effectiveStream.use { stream ->
+                stream.bufferedReader(Charsets.UTF_8).readText()
+            }
+        }
+
+        fun loadBundledFiveBooks(context: Context?): List<SeedRagBookBundle> {
+            cachedSeedBundles?.let { return it }
+            val ctx = context ?: return emptyList()
+            return synchronized(SEED_LOCK) {
+                cachedSeedBundles?.let { return@synchronized it }
+                try {
+                    val jsonText = decodePossiblyGzippedUtf8(ctx.assets.open(SEED_ASSET_PATH))
+                    val root = JSONObject(jsonText)
+                    val booksArr = root.getJSONArray("books")
+                    val parsed = mutableListOf<SeedRagBookBundle>()
+
+                    for (i in 0 until booksArr.length()) {
+                        val itemObj = booksArr.getJSONObject(i)
+                        val bObj = itemObj.getJSONObject("book")
+                        val bookKws = bObj.optJSONArray("keywords")?.let { arr ->
+                            (0 until arr.length()).map { arr.getString(it) }
+                        } ?: emptyList()
+
+                        val book = CloudRagBook(
+                            docId = bObj.getString("bookId"),
+                            bookId = bObj.getString("bookId"),
+                            isShared = true,
+                            title = bObj.getString("title"),
+                            author = bObj.optString("author", ""),
+                            eraCategory = bObj.optString("eraCategory", "تاريخ مصر"),
+                            summary = bObj.optString("summary", ""),
+                            pageCount = bObj.optInt("pageCount", 0),
+                            folderCount = bObj.optInt("folderCount", 0),
+                            chunkCount = bObj.optInt("chunkCount", 0),
+                            keywords = bookKws
+                        )
+
+                        val foldersArr = itemObj.getJSONArray("folders")
+                        val folders = (0 until foldersArr.length()).map { fIdx ->
+                            val fObj = foldersArr.getJSONObject(fIdx)
+                            val fKws = fObj.optJSONArray("keywords")?.let { arr ->
+                                (0 until arr.length()).map { arr.getString(it) }
+                            } ?: emptyList()
+                            CloudRagFolder(
+                                docId = fObj.getString("folderId"),
+                                folderId = fObj.getString("folderId"),
+                                bookId = fObj.getString("bookId"),
+                                bookTitle = fObj.getString("bookTitle"),
+                                isShared = true,
+                                folderIndex = fObj.optInt("folderIndex", fIdx + 1),
+                                folderTitle = fObj.getString("folderTitle"),
+                                category = fObj.optString("category", ""),
+                                pageRange = fObj.optString("pageRange", ""),
+                                topicSummary = fObj.optString("topicSummary", ""),
+                                chunkCount = fObj.optInt("chunkCount", 0),
+                                keywords = fKws
+                            )
+                        }
+
+                        val chunksArr = itemObj.getJSONArray("chunks")
+                        val chunks = (0 until chunksArr.length()).map { cIdx ->
+                            val cObj = chunksArr.getJSONObject(cIdx)
+                            val cKws = cObj.optJSONArray("keywords")?.let { arr ->
+                                (0 until arr.length()).map { arr.getString(it) }
+                            } ?: emptyList()
+                            CloudRagChunk(
+                                docId = cObj.getString("chunkId"),
+                                chunkId = cObj.getString("chunkId"),
+                                bookId = cObj.getString("bookId"),
+                                bookTitle = cObj.getString("bookTitle"),
+                                folderId = cObj.getString("folderId"),
+                                folderTitle = cObj.getString("folderTitle"),
+                                isShared = true,
+                                chunkIndex = cObj.optInt("chunkIndex", cIdx + 1),
+                                pageRange = cObj.optString("pageRange", ""),
+                                title = cObj.getString("title"),
+                                content = cObj.getString("content"),
+                                keywords = cKws
+                            )
+                        }
+
+                        parsed.add(SeedRagBookBundle(book = book, folders = folders, chunks = chunks))
+                    }
+                    cachedSeedBundles = parsed
+                    parsed
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to read compressed 5-book RAG seed pack", e)
+                    emptyList()
+                }
+            }
+        }
 
         fun normalizeSearchText(input: String): String {
             return input
@@ -91,94 +194,7 @@ class FirestoreRagRepository(
      * Loads the 5 pre-indexed books (39 small folders, 278 cited chunks) from the compressed 236 KB asset.
      * Raw PDFs are never bundled inside the APK.
      */
-    fun loadBundledFiveBooks(): List<SeedRagBookBundle> {
-        cachedSeedBundles?.let { return it }
-        val ctx = appContext ?: return emptyList()
-        return synchronized(this) {
-            cachedSeedBundles?.let { return@synchronized it }
-            try {
-                val jsonText = GZIPInputStream(ctx.assets.open(SEED_ASSET_PATH)).use { gz ->
-                    gz.bufferedReader(Charsets.UTF_8).readText()
-                }
-                val root = JSONObject(jsonText)
-                val booksArr = root.getJSONArray("books")
-                val parsed = mutableListOf<SeedRagBookBundle>()
-
-                for (i in 0 until booksArr.length()) {
-                    val itemObj = booksArr.getJSONObject(i)
-                    val bObj = itemObj.getJSONObject("book")
-                    val bookKws = bObj.optJSONArray("keywords")?.let { arr ->
-                        (0 until arr.length()).map { arr.getString(it) }
-                    } ?: emptyList()
-
-                    val book = CloudRagBook(
-                        docId = bObj.getString("bookId"),
-                        bookId = bObj.getString("bookId"),
-                        isShared = true,
-                        title = bObj.getString("title"),
-                        author = bObj.optString("author", ""),
-                        eraCategory = bObj.optString("eraCategory", "تاريخ مصر"),
-                        summary = bObj.optString("summary", ""),
-                        pageCount = bObj.optInt("pageCount", 0),
-                        folderCount = bObj.optInt("folderCount", 0),
-                        chunkCount = bObj.optInt("chunkCount", 0),
-                        keywords = bookKws
-                    )
-
-                    val foldersArr = itemObj.getJSONArray("folders")
-                    val folders = (0 until foldersArr.length()).map { fIdx ->
-                        val fObj = foldersArr.getJSONObject(fIdx)
-                        val fKws = fObj.optJSONArray("keywords")?.let { arr ->
-                            (0 until arr.length()).map { arr.getString(it) }
-                        } ?: emptyList()
-                        CloudRagFolder(
-                            docId = fObj.getString("folderId"),
-                            folderId = fObj.getString("folderId"),
-                            bookId = fObj.getString("bookId"),
-                            bookTitle = fObj.getString("bookTitle"),
-                            isShared = true,
-                            folderIndex = fObj.optInt("folderIndex", fIdx + 1),
-                            folderTitle = fObj.getString("folderTitle"),
-                            category = fObj.optString("category", ""),
-                            pageRange = fObj.optString("pageRange", ""),
-                            topicSummary = fObj.optString("topicSummary", ""),
-                            chunkCount = fObj.optInt("chunkCount", 0),
-                            keywords = fKws
-                        )
-                    }
-
-                    val chunksArr = itemObj.getJSONArray("chunks")
-                    val chunks = (0 until chunksArr.length()).map { cIdx ->
-                        val cObj = chunksArr.getJSONObject(cIdx)
-                        val cKws = cObj.optJSONArray("keywords")?.let { arr ->
-                            (0 until arr.length()).map { arr.getString(it) }
-                        } ?: emptyList()
-                        CloudRagChunk(
-                            docId = cObj.getString("chunkId"),
-                            chunkId = cObj.getString("chunkId"),
-                            bookId = cObj.getString("bookId"),
-                            bookTitle = cObj.getString("bookTitle"),
-                            folderId = cObj.getString("folderId"),
-                            folderTitle = cObj.getString("folderTitle"),
-                            isShared = true,
-                            chunkIndex = cObj.optInt("chunkIndex", cIdx + 1),
-                            pageRange = cObj.optString("pageRange", ""),
-                            title = cObj.getString("title"),
-                            content = cObj.getString("content"),
-                            keywords = cKws
-                        )
-                    }
-
-                    parsed.add(SeedRagBookBundle(book = book, folders = folders, chunks = chunks))
-                }
-                cachedSeedBundles = parsed
-                parsed
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to read compressed 5-book RAG seed pack", e)
-                emptyList()
-            }
-        }
-    }
+    fun loadBundledFiveBooks(): List<SeedRagBookBundle> = loadBundledFiveBooks(appContext)
 
     /**
      * Real-time stream of shared Cloud Firebase books (`/rag_books` where `isShared == true`).

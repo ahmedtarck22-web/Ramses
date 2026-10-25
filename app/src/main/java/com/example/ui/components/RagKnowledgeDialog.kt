@@ -13,14 +13,15 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -44,6 +45,7 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -57,6 +59,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.example.data.model.CloudRagBook
 import com.example.data.model.CloudRagChunk
 import com.example.data.model.CloudRagFolder
@@ -134,19 +137,25 @@ fun RagKnowledgeDialog(
         }
     }
 
-    Dialog(onDismissRequest = onDismiss) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
         Card(
             modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(max = 680.dp)
-                .padding(10.dp),
+                .fillMaxWidth(0.95f)
+                .fillMaxHeight(0.90f)
+                .imePadding()
+                .padding(vertical = 8.dp),
             shape = RoundedCornerShape(26.dp),
             colors = CardDefaults.cardColors(containerColor = SurfaceCard),
             border = androidx.compose.foundation.BorderStroke(1.dp, RoyalGold.copy(alpha = 0.5f))
         ) {
             Column(
                 modifier = Modifier
+                    .fillMaxSize()
                     .verticalScroll(rememberScrollState())
+                    .testTag("rag_dialog_scroll")
                     .padding(18.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
@@ -165,7 +174,7 @@ fun RagKnowledgeDialog(
                     )
                     IconButton(
                         onClick = onDismiss,
-                        modifier = Modifier.size(32.dp)
+                        modifier = Modifier.size(48.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Close,
@@ -220,7 +229,7 @@ fun RagKnowledgeDialog(
                             contentColor = PharaonicMidnight
                         ),
                         shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.height(34.dp)
+                        modifier = Modifier.heightIn(min = 48.dp)
                     ) {
                         Icon(
                             imageVector = if (isAddingNew) Icons.Default.Close else Icons.Default.Add,
@@ -278,7 +287,7 @@ fun RagKnowledgeDialog(
                     shape = RoundedCornerShape(12.dp),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(42.dp)
+                        .heightIn(min = 48.dp)
                         .testTag("rag_upload_file_button")
                 ) {
                     Icon(
@@ -389,84 +398,85 @@ fun RagKnowledgeDialog(
                         )
                     }
                 } else {
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 280.dp),
+                    // Plain Column (no nested LazyColumn) inside outer verticalScroll
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        items(documents, key = { it.id }) { doc ->
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(14.dp))
-                                    .background(if (doc.isEnabled) Color(0x26102A43) else Color(0x0DFFFFFF))
-                                    .border(
-                                        1.dp,
-                                        if (doc.isEnabled) RoyalGold.copy(alpha = 0.3f) else Color.White.copy(alpha = 0.05f),
-                                        RoundedCornerShape(14.dp)
-                                    )
-                                    .padding(12.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
+                        documents.forEach { doc ->
+                            key(doc.id) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .background(if (doc.isEnabled) Color(0x26102A43) else Color(0x0DFFFFFF))
+                                        .border(
+                                            1.dp,
+                                            if (doc.isEnabled) RoyalGold.copy(alpha = 0.3f) else Color.White.copy(alpha = 0.05f),
+                                            RoundedCornerShape(14.dp)
+                                        )
+                                        .padding(12.dp)
                                 ) {
-                                    Column(modifier = Modifier.weight(1f)) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(
-                                                imageVector = Icons.Default.Description,
-                                                contentDescription = null,
-                                                tint = if (doc.isEnabled) RoyalGold else TextSecondary,
-                                                modifier = Modifier.size(16.dp)
-                                            )
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Text(
-                                                text = doc.title,
-                                                fontFamily = AmiriFontFamily,
-                                                fontWeight = FontWeight.Bold,
-                                                fontSize = 14.sp,
-                                                color = if (doc.isEnabled) TextPrimary else TextSecondary
-                                            )
-                                            if (doc.isCloudPdfBook) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Description,
+                                                    contentDescription = null,
+                                                    tint = if (doc.isEnabled) RoyalGold else TextSecondary,
+                                                    modifier = Modifier.size(16.dp)
+                                                )
                                                 Spacer(modifier = Modifier.width(6.dp))
                                                 Text(
-                                                    text = "PDF•GCS",
-                                                    fontFamily = CinzelFontFamily,
-                                                    fontSize = 9.sp,
-                                                    color = EgyptianCyan
+                                                    text = doc.title,
+                                                    fontFamily = AmiriFontFamily,
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 14.sp,
+                                                    color = if (doc.isEnabled) TextPrimary else TextSecondary
+                                                )
+                                                if (doc.isCloudPdfBook) {
+                                                    Spacer(modifier = Modifier.width(6.dp))
+                                                    Text(
+                                                        text = "PDF•GCS",
+                                                        fontFamily = CinzelFontFamily,
+                                                        fontSize = 9.sp,
+                                                        color = EgyptianCyan
+                                                    )
+                                                }
+                                            }
+                                            Spacer(modifier = Modifier.height(3.dp))
+                                            Text(
+                                                text = doc.content.take(65) + if (doc.content.length > 65) "..." else "",
+                                                fontFamily = AmiriFontFamily,
+                                                fontSize = 11.sp,
+                                                color = TextSecondary
+                                            )
+                                        }
+
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Switch(
+                                                checked = doc.isEnabled,
+                                                onCheckedChange = { onToggleDocument(doc) },
+                                                colors = SwitchDefaults.colors(
+                                                    checkedThumbColor = RoyalGold,
+                                                    checkedTrackColor = Color(0xFF102A43)
+                                                )
+                                            )
+                                            IconButton(
+                                                onClick = { onDeleteDocument(doc.id) },
+                                                modifier = Modifier.size(48.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Delete,
+                                                    contentDescription = "حذف الوثيقة",
+                                                    tint = TextSecondary.copy(alpha = 0.7f),
+                                                    modifier = Modifier.size(18.dp)
                                                 )
                                             }
-                                        }
-                                        Spacer(modifier = Modifier.height(3.dp))
-                                        Text(
-                                            text = doc.content.take(65) + if (doc.content.length > 65) "..." else "",
-                                            fontFamily = AmiriFontFamily,
-                                            fontSize = 11.sp,
-                                            color = TextSecondary
-                                        )
-                                    }
-
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Switch(
-                                            checked = doc.isEnabled,
-                                            onCheckedChange = { onToggleDocument(doc) },
-                                            colors = SwitchDefaults.colors(
-                                                checkedThumbColor = RoyalGold,
-                                                checkedTrackColor = Color(0xFF102A43)
-                                            )
-                                        )
-                                        IconButton(
-                                            onClick = { onDeleteDocument(doc.id) },
-                                            modifier = Modifier.size(32.dp)
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.Delete,
-                                                contentDescription = "حذف الوثيقة",
-                                                tint = TextSecondary.copy(alpha = 0.7f),
-                                                modifier = Modifier.size(18.dp)
-                                            )
                                         }
                                     }
                                 }

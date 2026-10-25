@@ -1,6 +1,7 @@
 package com.example.service
 
 import android.content.Context
+import android.media.AudioAttributes
 import android.os.Handler
 import android.os.Looper
 import android.speech.tts.TextToSpeech
@@ -31,6 +32,15 @@ class TextToSpeechHelper(context: Context) {
                 if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
                     tts?.language = Locale.getDefault()
                 }
+                try {
+                    tts?.setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_ASSISTANT)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                            .build()
+                    )
+                } catch (_: Exception) {}
+
                 // Regal Egyptian/Pharaonic voice tone: dignified cadence
                 tts?.setPitch(0.94f)
                 tts?.setSpeechRate(0.98f)
@@ -127,7 +137,7 @@ class TextToSpeechHelper(context: Context) {
                     tts?.language = Locale.forLanguageTag("ar")
                 }
                 tts?.setPitch(0.96f)
-                tts?.setSpeechRate(1.06f)
+                tts?.setSpeechRate(1.05f)
             }
         } catch (e: Exception) {
             Log.w("TTS", "Error setting language", e)
@@ -137,16 +147,24 @@ class TextToSpeechHelper(context: Context) {
         _isSpeaking.value = true
         tts?.speak(cleaned, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
 
-        // Safety fallback watchdog in case UtteranceProgressListener does not fire on this device
-        val fallbackDurationMs = (cleaned.split(" ").size * 320L + 1500L).coerceIn(2500L, 16000L)
+        // Smart non-interrupting watchdog: never marks speech done while tts.isSpeaking is still true!
+        val initialDelayMs = maxOf(8_000L, cleaned.length * 120L + 4000L).coerceAtMost(120_000L)
+        scheduleWatchdogCheck(initialDelayMs)
+    }
+
+    private fun scheduleWatchdogCheck(delayMs: Long) {
         mainHandler.postDelayed({
-            if (_isSpeaking.value) {
+            if (!_isSpeaking.value) return@postDelayed
+            if (tts?.isSpeaking == true) {
+                // Engine is still actively speaking; check again in 2 seconds instead of cutting off!
+                scheduleWatchdogCheck(2000L)
+            } else {
                 _isSpeaking.value = false
                 val cb = currentDoneCallback
                 currentDoneCallback = null
                 cb?.invoke()
             }
-        }, fallbackDurationMs)
+        }, delayMs)
     }
 
     fun stop() {

@@ -76,7 +76,7 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
 
     val ttsHelper = TextToSpeechHelper(application)
     val speechHelper = SpeechRecognizerHelper(application)
-    val geminiLiveClient = GeminiLiveWebSocketClient()
+    val geminiLiveClient = GeminiLiveWebSocketClient(application.applicationContext)
 
     // Language setting (Arabic / English)
     private val _appLanguage = MutableStateFlow(
@@ -366,8 +366,13 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
             }
             if (_isGeminiLiveActive.value && _usingFallbackLocalVoice.value) {
                 viewModelScope.launch {
-                    delay(350)
-                    if (_isGeminiLiveActive.value && _usingFallbackLocalVoice.value && _voiceCallState.value != VoiceCallState.SPEAKING) {
+                    delay(450)
+                    if (
+                        _isGeminiLiveActive.value &&
+                        _usingFallbackLocalVoice.value &&
+                        _voiceCallState.value != VoiceCallState.SPEAKING &&
+                        !ttsHelper.isSpeaking.value
+                    ) {
                         _voiceCallState.value = VoiceCallState.LISTENING
                         val langTag = if (_appLanguage.value == AppLanguage.ENGLISH) "en-US" else "ar-EG"
                         speechHelper.startListening(langTag)
@@ -881,8 +886,8 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
                 val retrievedPassages = cloudRagRepo.retrieveRelevantPassages(
                     query = userText,
                     cachedCloudFolders = _cloudRagFolders.value,
-                    topFoldersLimit = 4,
-                    topChunksLimit = if (isVoice) 2 else 5
+                    topFoldersLimit = if (isVoice) 3 else 6,
+                    topChunksLimit = if (isVoice) 2 else 8
                 )
                 val cloudRetrievedDocs = retrievedPassages.map { passage ->
                     RagDocument(
@@ -908,11 +913,12 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
                     !isVoice && image == null
 
                 val result = if (proxyConfigured) {
-                    val sysInstruction = if (_selectedGem.value == "GEMINI_DEFAULT") {
-                        if (_appLanguage.value == AppLanguage.ARABIC) GeminiApiClient.GEMINI_SYSTEM_INSTRUCTION_AR else GeminiApiClient.GEMINI_SYSTEM_INSTRUCTION_EN
-                    } else {
-                        if (_appLanguage.value == AppLanguage.ARABIC) GeminiApiClient.RAMSES_SYSTEM_INSTRUCTION_AR else GeminiApiClient.RAMSES_SYSTEM_INSTRUCTION_EN
-                    }
+                    val sysInstruction = GeminiApiClient.buildEffectiveSystemInstruction(
+                        gemPersona = _selectedGem.value,
+                        appLanguage = _appLanguage.value,
+                        isVoiceCall = false,
+                        ragContext = emptyList()
+                    )
                     val proxyResp = fileSearchOrchestrator.queryLinkedKnowledgeBase(
                         prompt = userText,
                         systemInstruction = sysInstruction,
@@ -987,26 +993,28 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
                 }
 
                 if (isVoice) {
+                    speechHelper.stopListening()
                     _voiceCallState.value = VoiceCallState.SPEAKING
                     val langTag = if (_appLanguage.value == AppLanguage.ENGLISH) "en-US" else "ar-EG"
-                    val safetyTimeoutMs = minOf(12_000L, maxOf(2500L, (finalText.length * 80L)))
-                    viewModelScope.launch {
-                        delay(safetyTimeoutMs)
-                        if (_isGeminiLiveActive.value && _usingFallbackLocalVoice.value && _voiceCallState.value == VoiceCallState.SPEAKING) {
-                            _voiceCallState.value = VoiceCallState.LISTENING
-                            speechHelper.startListening(langTag)
-                        }
-                    }
 
                     ttsHelper.speak(finalText, languageCode = langTag) {
-                        if (_isGeminiLiveActive.value && _usingFallbackLocalVoice.value) {
-                            _voiceCallState.value = VoiceCallState.LISTENING
-                            speechHelper.startListening(langTag)
+                        viewModelScope.launch {
+                            // Wait for loudspeaker reverb to decay before reopening SpeechRecognizer
+                            delay(550)
+                            if (
+                                _isGeminiLiveActive.value &&
+                                _usingFallbackLocalVoice.value &&
+                                !ttsHelper.isSpeaking.value
+                            ) {
+                                _voiceCallState.value = VoiceCallState.LISTENING
+                                speechHelper.startListening(langTag)
+                            }
                         }
                     }
                 } else if (_is3DViewMode.value && _isAutoSpeakEnabled.value && finalText.isNotBlank() && !result.isError) {
+                    speechHelper.stopListening()
                     val langTag = if (_appLanguage.value == AppLanguage.ENGLISH) "en-US" else "ar-EG"
-                    ttsHelper.speak(finalText.take(600), languageCode = langTag)
+                    ttsHelper.speak(finalText.take(3500), languageCode = langTag)
                 }
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) {
@@ -1099,23 +1107,24 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
 
     private fun startLocalFallbackVoiceLoop() {
         _usingFallbackLocalVoice.value = true
+        speechHelper.stopListening()
         _voiceCallState.value = VoiceCallState.SPEAKING
         val isEnglish = _appLanguage.value == AppLanguage.ENGLISH
         val greeting = if (isEnglish) "Greetings, I am listening." else "مرحباً بك، أنا أستمع إليك."
         val langTag = if (isEnglish) "en-US" else "ar-EG"
 
-        viewModelScope.launch {
-            delay(2200)
-            if (_isGeminiLiveActive.value && _usingFallbackLocalVoice.value && _voiceCallState.value == VoiceCallState.SPEAKING) {
-                _voiceCallState.value = VoiceCallState.LISTENING
-                speechHelper.startListening(langTag)
-            }
-        }
-
         ttsHelper.speak(greeting, languageCode = langTag) {
-            if (_isGeminiLiveActive.value && _usingFallbackLocalVoice.value) {
-                _voiceCallState.value = VoiceCallState.LISTENING
-                speechHelper.startListening(langTag)
+            viewModelScope.launch {
+                // Allow speaker audio echo to decay completely before starting mic recognition
+                delay(550)
+                if (
+                    _isGeminiLiveActive.value &&
+                    _usingFallbackLocalVoice.value &&
+                    !ttsHelper.isSpeaking.value
+                ) {
+                    _voiceCallState.value = VoiceCallState.LISTENING
+                    speechHelper.startListening(langTag)
+                }
             }
         }
     }
@@ -1192,6 +1201,7 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun speakMessage(text: String) {
+        speechHelper.stopListening()
         val langTag = if (_appLanguage.value == AppLanguage.ENGLISH) "en-US" else "ar-EG"
         ttsHelper.speak(text, languageCode = langTag)
     }

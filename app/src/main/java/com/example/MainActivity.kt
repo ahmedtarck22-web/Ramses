@@ -16,6 +16,9 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -36,8 +39,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
@@ -46,6 +51,7 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.ViewInAr
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
@@ -53,16 +59,19 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -71,9 +80,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.LayoutDirection
 import com.example.data.model.AppLanguage
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -174,12 +185,40 @@ fun RamsesApp(viewModel: RamsesViewModel) {
 
     val listState = rememberLazyListState()
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+    var autoFollowStream by remember { mutableStateOf(true) }
+    val canScrollDown by remember {
+        derivedStateOf { listState.canScrollForward }
+    }
 
-    // Automatically scroll to bottom when messages or streaming text update
-    LaunchedEffect(messages.size, streamingMessage?.text?.length, isLoading) {
-        val totalCount = messages.size + (if (streamingMessage != null) 1 else 0)
-        if (totalCount > 0) {
-            listState.animateScrollToItem(totalCount - 1)
+    // Track manual user scroll gestures so streaming never fights or blocks manual scrolling
+    LaunchedEffect(listState) {
+        snapshotFlow {
+            listState.isScrollInProgress to listState.canScrollForward
+        }.collect { (scrolling, canForward) ->
+            if (scrolling && canForward) {
+                autoFollowStream = false
+            } else if (!canForward) {
+                autoFollowStream = true
+            }
+        }
+    }
+
+    // Scroll to bottom when a new message is sent/added
+    LaunchedEffect(messages.size) {
+        if (messages.isNotEmpty()) {
+            autoFollowStream = true
+            val lastIdx = (listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(messages.size - 1)
+            listState.animateScrollToItem(lastIdx)
+        }
+    }
+
+    // Follow streaming text smoothly only when user has not scrolled up
+    LaunchedEffect(streamingMessage?.text?.length, isLoading) {
+        if (autoFollowStream && !listState.isScrollInProgress) {
+            val lastIdx = listState.layoutInfo.totalItemsCount - 1
+            if (lastIdx >= 0) {
+                listState.scrollToItem(lastIdx)
+            }
         }
     }
 
@@ -431,7 +470,8 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                                         Column(
                                             modifier = Modifier
                                                 .fillMaxSize()
-                                                .padding(horizontal = 14.dp, vertical = 4.dp),
+                                                .verticalScroll(rememberScrollState())
+                                                .padding(horizontal = 14.dp, vertical = 6.dp),
                                             horizontalAlignment = Alignment.CenterHorizontally,
                                             verticalArrangement = Arrangement.Center
                                         ) {
@@ -554,7 +594,42 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                                                     }
                                                 }
                                             }
+
+                                            item(key = "chat_bottom_anchor_split") {
+                                                Spacer(modifier = Modifier.height(2.dp))
+                                            }
                                         }
+                                    }
+                                }
+
+                                // Floating Scroll-to-Bottom Button in Split View (inside BoxScope)
+                                androidx.compose.animation.AnimatedVisibility(
+                                    visible = canScrollDown && (messages.isNotEmpty() || streamingMessage != null),
+                                    enter = fadeIn(),
+                                    exit = fadeOut(),
+                                    modifier = Modifier
+                                        .align(Alignment.BottomEnd)
+                                        .padding(end = 14.dp, bottom = 10.dp)
+                                ) {
+                                    SmallFloatingActionButton(
+                                        onClick = {
+                                            autoFollowStream = true
+                                            coroutineScope.launch {
+                                                val lastIdx = (listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0)
+                                                listState.animateScrollToItem(lastIdx)
+                                            }
+                                        },
+                                        shape = CircleShape,
+                                        containerColor = RoyalGold,
+                                        contentColor = PharaonicMidnight,
+                                        modifier = Modifier
+                                            .size(48.dp)
+                                            .testTag("scroll_to_bottom_button")
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.KeyboardArrowDown,
+                                            contentDescription = stringResource(R.string.scroll_to_bottom_desc)
+                                        )
                                     }
                                 }
                             }
@@ -565,11 +640,13 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                         // =========================================================================
                         Column(modifier = Modifier.fillMaxSize()) {
 
-                            if (messages.isEmpty()) {
-                                // Signature Google Gemini Home Welcome Screen (like Android / iOS app)
+                            if (messages.isEmpty() && streamingMessage == null) {
+                                // Signature Google Gemini Home Welcome Screen (fully scrollable on all screens)
                                 Column(
                                     modifier = Modifier
                                         .fillMaxSize()
+                                        .verticalScroll(rememberScrollState())
+                                        .testTag("home_welcome_scroll")
                                         .padding(horizontal = 20.dp, vertical = 12.dp),
                                     horizontalAlignment = Alignment.CenterHorizontally,
                                     verticalArrangement = Arrangement.Center
@@ -708,68 +785,105 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                                     if (streamingMessage != null) messages + streamingMessage!! else messages
                                 }
 
-                                LazyColumn(
-                                    state = listState,
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .padding(horizontal = 16.dp),
-                                    contentPadding = PaddingValues(top = 8.dp, bottom = 16.dp),
-                                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    items(allDisplayedMessages, key = { it.id }) { message ->
-                                        ChatMessageBubble(
-                                            message = message,
-                                            appLanguage = appLanguage,
-                                            onSpeakClick = { textToSpeak ->
-                                                viewModel.speakMessage(textToSpeak)
-                                            },
-                                            onOpenApiKeyClick = {
-                                                showApiKeyDialog = true
-                                            },
-                                            onRetryClick = {
-                                                val lastUserMessage = messages.findLast { it.sender == MessageSender.USER }
-                                                if (lastUserMessage != null) {
-                                                    viewModel.sendMessage(lastUserMessage.text)
+                                Box(modifier = Modifier.fillMaxSize()) {
+                                    LazyColumn(
+                                        state = listState,
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .padding(horizontal = 16.dp),
+                                        contentPadding = PaddingValues(top = 8.dp, bottom = 16.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        items(allDisplayedMessages, key = { it.id }) { message ->
+                                            ChatMessageBubble(
+                                                message = message,
+                                                appLanguage = appLanguage,
+                                                onSpeakClick = { textToSpeak ->
+                                                    viewModel.speakMessage(textToSpeak)
+                                                },
+                                                onOpenApiKeyClick = {
+                                                    showApiKeyDialog = true
+                                                },
+                                                onRetryClick = {
+                                                    val lastUserMessage = messages.findLast { it.sender == MessageSender.USER }
+                                                    if (lastUserMessage != null) {
+                                                        viewModel.sendMessage(lastUserMessage.text)
+                                                    }
+                                                },
+                                                onDismissErrorClick = {
+                                                    viewModel.deleteMessage(message.id)
                                                 }
-                                            },
-                                            onDismissErrorClick = {
-                                                viewModel.deleteMessage(message.id)
-                                            }
-                                        )
-                                    }
+                                            )
+                                        }
 
-                                    if (isLoading && streamingMessage == null) {
-                                        item {
-                                            Row(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .padding(vertical = 12.dp),
-                                                horizontalArrangement = Arrangement.Start,
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                Box(
+                                        if (isLoading && streamingMessage == null) {
+                                            item {
+                                                Row(
                                                     modifier = Modifier
-                                                        .clip(RoundedCornerShape(16.dp))
-                                                        .background(SurfaceGlass)
-                                                        .border(1.dp, RoyalGold.copy(alpha = 0.3f), RoundedCornerShape(16.dp))
-                                                        .padding(horizontal = 16.dp, vertical = 10.dp)
+                                                        .fillMaxWidth()
+                                                        .padding(vertical = 12.dp),
+                                                    horizontalArrangement = Arrangement.Start,
+                                                    verticalAlignment = Alignment.CenterVertically
                                                 ) {
-                                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                                        CircularProgressIndicator(
-                                                            modifier = Modifier.size(18.dp),
-                                                            color = RoyalGold,
-                                                            strokeWidth = 2.dp
-                                                        )
-                                                        Spacer(modifier = Modifier.width(10.dp))
-                                                        Text(
-                                                            text = com.example.data.model.AppStrings.thinkingMessage(appLanguage, isSearchGroundingEnabled),
-                                                            fontFamily = AmiriFontFamily,
-                                                            fontSize = 14.sp,
-                                                            color = RoyalGold
-                                                        )
+                                                    Box(
+                                                        modifier = Modifier
+                                                            .clip(RoundedCornerShape(16.dp))
+                                                            .background(SurfaceGlass)
+                                                            .border(1.dp, RoyalGold.copy(alpha = 0.3f), RoundedCornerShape(16.dp))
+                                                            .padding(horizontal = 16.dp, vertical = 10.dp)
+                                                    ) {
+                                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                                            CircularProgressIndicator(
+                                                                modifier = Modifier.size(18.dp),
+                                                                color = RoyalGold,
+                                                                strokeWidth = 2.dp
+                                                            )
+                                                            Spacer(modifier = Modifier.width(10.dp))
+                                                            Text(
+                                                                text = com.example.data.model.AppStrings.thinkingMessage(appLanguage, isSearchGroundingEnabled),
+                                                                fontFamily = AmiriFontFamily,
+                                                                fontSize = 14.sp,
+                                                                color = RoyalGold
+                                                            )
+                                                        }
                                                     }
                                                 }
                                             }
+                                        }
+
+                                        item(key = "chat_bottom_anchor_full") {
+                                            Spacer(modifier = Modifier.height(2.dp))
+                                        }
+                                    }
+
+                                    // Floating Scroll-to-Bottom Button in Full Chat Mode
+                                    androidx.compose.animation.AnimatedVisibility(
+                                        visible = canScrollDown && (messages.isNotEmpty() || streamingMessage != null),
+                                        enter = fadeIn(),
+                                        exit = fadeOut(),
+                                        modifier = Modifier
+                                            .align(Alignment.BottomEnd)
+                                            .padding(end = 16.dp, bottom = 14.dp)
+                                    ) {
+                                        SmallFloatingActionButton(
+                                            onClick = {
+                                                autoFollowStream = true
+                                                coroutineScope.launch {
+                                                    val lastIdx = (listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0)
+                                                    listState.animateScrollToItem(lastIdx)
+                                                }
+                                            },
+                                            shape = CircleShape,
+                                            containerColor = RoyalGold,
+                                            contentColor = PharaonicMidnight,
+                                            modifier = Modifier
+                                                .size(48.dp)
+                                                .testTag("scroll_to_bottom_button")
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.KeyboardArrowDown,
+                                                contentDescription = stringResource(R.string.scroll_to_bottom_desc)
+                                            )
                                         }
                                     }
                                 }
@@ -935,7 +1049,11 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                             .fillMaxWidth()
                             .padding(16.dp)
                     ) {
-                        Column(modifier = Modifier.padding(20.dp)) {
+                        Column(
+                            modifier = Modifier
+                                .verticalScroll(rememberScrollState())
+                                .padding(20.dp)
+                        ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween,

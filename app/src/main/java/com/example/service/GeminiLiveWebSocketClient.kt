@@ -1,18 +1,19 @@
 package com.example.service
 
 import android.annotation.SuppressLint
+import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.media.audiofx.AcousticEchoCanceler
-import android.media.audiofx.AutomaticGainControl
 import android.media.audiofx.NoiseSuppressor
+import android.os.SystemClock
 import android.util.Base64
 import android.util.Log
 import com.example.BuildConfig
-import com.example.data.api.GeminiApiClient
 import com.example.data.model.AppLanguage
 import com.example.data.model.RagDocument
 import com.example.data.model.VoiceCallState
@@ -40,18 +41,22 @@ import java.nio.ByteOrder
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.log10
 import kotlin.math.sqrt
 
 /**
- * Real Full-Duplex Gemini Live WebSocket Engine (BidiGenerateContent).
+ * Real Full-Duplex Gemini Live WebSocket Engine (BidiGenerateContent) with Dual-Layer Acoustic Echo Guard.
  *
- * Streams raw 16kHz 16-bit mono PCM microphone audio directly to Gemini Live
- * and plays back native 24kHz 16-bit mono PCM AI voice audio in real time,
- * supporting sub-second latency, instant barge-in interruption, live input/output
- * transcriptions, and real-time audio RMS amplitude for 3D Avatar lip-sync.
+ * Streams raw 16kHz 16-bit mono PCM microphone audio to Gemini Live and plays back native 24kHz
+ * 16-bit mono PCM AI voice audio in real time. Combines hardware DSP Acoustic Echo Cancellation
+ * (`MODE_IN_COMMUNICATION` + `USAGE_VOICE_COMMUNICATION` + `AcousticEchoCanceler`) with software
+ * silence-gating while AI speech is playing + 550ms acoustic reverb tail cooldown so the phone's
+ * microphone never hears or interrupts Ramses's own voice from the loudspeaker.
  */
-class GeminiLiveWebSocketClient {
+class GeminiLiveWebSocketClient(
+    private val appContext: Context? = null
+) {
 
     enum class LiveConnectionStatus {
         DISCONNECTED,
@@ -69,6 +74,7 @@ class GeminiLiveWebSocketClient {
         private const val INPUT_SAMPLE_RATE = 16000
         private const val OUTPUT_SAMPLE_RATE = 24000
         private const val PCM_CHUNK_BYTES = 3200 // 100ms of 16kHz 16-bit mono PCM
+        const val ECHO_TAIL_COOLDOWN_MS = 550L
 
         val LIVE_CANDIDATE_MODELS = listOf(
             "models/gemini-3.1-flash-live-preview",
@@ -92,13 +98,19 @@ class GeminiLiveWebSocketClient {
     private var audioTrack: AudioTrack? = null
     private var echoCanceler: AcousticEchoCanceler? = null
     private var noiseSuppressor: NoiseSuppressor? = null
-    private var gainControl: AutomaticGainControl? = null
+
+    private var savedAudioMode: Int? = null
+    private var savedSpeakerphoneOn: Boolean? = null
 
     private var pcmPlaybackChannel = Channel<Pair<Int, ByteArray>>(Channel.UNLIMITED)
     private val playbackGeneration = AtomicInteger(0)
     private val isSetupComplete = AtomicBoolean(false)
     private val isSessionActive = AtomicBoolean(false)
     private val isModelTurnComplete = AtomicBoolean(true)
+
+    // Acoustic Echo Guard state: prevents mic from feeding speaker audio back to Gemini's VAD
+    private val isAiAudioPlaying = AtomicBoolean(false)
+    private val echoTailUntilElapsedMs = AtomicLong(0L)
 
     private var activeModelIndex = 0
     private var currentApiKey: String = ""
@@ -137,12 +149,54 @@ class GeminiLiveWebSocketClient {
     var onTurnCompleted: ((userText: String, modelText: String) -> Unit)? = null
     var onFallbackRequired: ((reason: String) -> Unit)? = null
 
+    /**
+     * Returns true while AI audio is actively playing through the loudspeaker OR during the
+     * post-playback acoustic echo decay window.
+     */
+    fun isEchoGateActive(nowElapsedMs: Long = SystemClock.elapsedRealtime()): Boolean {
+        return isAiAudioPlaying.get() || nowElapsedMs < echoTailUntilElapsedMs.get()
+    }
+
+    internal fun setEchoGateForTesting(aiPlaying: Boolean, echoTailUntilMs: Long) {
+        isAiAudioPlaying.set(aiPlaying)
+        echoTailUntilElapsedMs.set(echoTailUntilMs)
+    }
+
     fun resolveApiKey(customApiKey: String?): String {
         return when {
             !customApiKey.isNullOrBlank() -> customApiKey.trim()
             BuildConfig.GEMINI_API_KEY.isNotBlank() && BuildConfig.GEMINI_API_KEY != "MY_GEMINI_API_KEY" ->
                 BuildConfig.GEMINI_API_KEY.trim()
             else -> ""
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun enterVoiceCommunicationAudioMode() {
+        val am = appContext?.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+        try {
+            if (savedAudioMode == null) {
+                savedAudioMode = am.mode
+                savedSpeakerphoneOn = am.isSpeakerphoneOn
+            }
+            am.mode = AudioManager.MODE_IN_COMMUNICATION
+            am.isSpeakerphoneOn = true
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not configure AudioManager communication mode: ${e.message}")
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun restoreAudioMode() {
+        val am = appContext?.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+        try {
+            savedSpeakerphoneOn?.let { am.isSpeakerphoneOn = it }
+            savedAudioMode?.let { am.mode = it }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not restore AudioManager mode: ${e.message}")
+        } finally {
+            savedAudioMode = null
+            savedSpeakerphoneOn = null
         }
     }
 
@@ -172,6 +226,8 @@ class GeminiLiveWebSocketClient {
 
         isSessionActive.set(true)
         isSetupComplete.set(false)
+        isAiAudioPlaying.set(false)
+        echoTailUntilElapsedMs.set(0L)
         _isMicMuted.value = false
         _isSpeakerMuted.value = false
         _liveUserTranscript.value = ""
@@ -179,6 +235,7 @@ class GeminiLiveWebSocketClient {
         userTranscriptBuffer.setLength(0)
         modelTranscriptBuffer.setLength(0)
 
+        enterVoiceCommunicationAudioMode()
         connectWithModelIndex(0)
         return true
     }
@@ -187,6 +244,7 @@ class GeminiLiveWebSocketClient {
         if (!isSessionActive.get()) return
         if (index >= LIVE_CANDIDATE_MODELS.size) {
             Log.e(TAG, "All Gemini Live models exhausted; triggering fallback")
+            restoreAudioMode()
             _connectionStatus.value = LiveConnectionStatus.FALLBACK_LOCAL
             onFallbackRequired?.invoke("All live models unavailable")
             return
@@ -231,7 +289,6 @@ class GeminiLiveWebSocketClient {
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 Log.w(TAG, "WebSocket closed ($code): $reason")
                 if (isSessionActive.get() && !isSetupComplete.get()) {
-                    // Model rejected setup -> try next live model immediately
                     scope.launch {
                         connectWithModelIndex(index + 1)
                     }
@@ -248,6 +305,7 @@ class GeminiLiveWebSocketClient {
                         connectWithModelIndex(index + 1)
                     }
                 } else {
+                    restoreAudioMode()
                     _connectionStatus.value = LiveConnectionStatus.ERROR
                     onFallbackRequired?.invoke(t.localizedMessage ?: "WebSocket connection failed")
                 }
@@ -259,21 +317,21 @@ class GeminiLiveWebSocketClient {
         val isArabic = currentLanguage == AppLanguage.ARABIC
         val baseInstruction = when (currentGemPersona) {
             "GEMINI_DEFAULT" -> if (isArabic) {
-                """أنت مساعد Google Gemini الصوتي المباشر (Gemini Live). تحدث بصوت طبيعي، دافئ، وسريع البديهة باللغة العربية الواضحة (أو العامية المصرية اللطيفة عند مخاطبتك بها). اجعل ردودك الصوتية موجزة، حيوية، ومباشرة في جملة إلى ثلاث جمل قصيرة كمحادثة هاتفية حقيقية."""
+                """أنت مساعد Google Gemini الصوتي المباشر (Gemini Live). تحدث بصوت طبيعي، دافئ، ومترابط باللغة العربية الواضحة (أو العامية المصرية اللطيفة عند مخاطبتك بها). أكمل فكرتك وجملك الصوتية بوضوح وانسيابية في جملتين إلى خمس جمل وافية ومترابطة كمحادثة هاتفية حقيقية دون توقف مفاجئ."""
             } else {
-                """You are Google Gemini Live. Speak naturally, warmly, and conversationally in clear English. Keep spoken answers concise, engaging, and natural (1 to 3 short sentences) like a real phone conversation."""
+                """You are Google Gemini Live. Speak naturally, warmly, and conversationally in clear English. Complete your thoughts smoothly in 2 to 5 coherent spoken sentences like a real phone conversation."""
             }
             else -> if (isArabic) {
-                """أنت الملك رمسيس الثاني العظيم، فرعون مصر وابن رع، تتحدث مباشرة بصوتك الملكي المهيب والدافئ عبر محادثة صوتية حية (Live). خاطب محدثك بوقار ومودة، وأجب عن كافة أسئلته التاريخية واليومية والعلمية ببلاغة وإيجاز (من جملة إلى ثلاث جمل قصيرة طبيعية للحديث الصوتي بدون سرد طويل)."""
+                """أنت الملك رمسيس الثاني العظيم، فرعون مصر وابن رع، تتحدث مباشرة بصوتك الملكي المهيب والدافئ عبر محادثة صوتية حية (Live). خاطب محدثك بوقار ومودة، وأكمل إجاباتك الصوتية بسلاسة وترابط (في جملتين إلى خمس جمل وافية وواضحة بدون رموز) حتى تصل الفكرة كاملة للمستمع."""
             } else {
-                """You are King Rameses II, the Great Pharaoh of Egypt, speaking live in real time with a warm, regal, majestic voice. Answer historical, scientific, and daily questions concisely and naturally in 1 to 3 spoken sentences."""
+                """You are King Rameses II, the Great Pharaoh of Egypt, speaking live in real time with a warm, regal, majestic voice. Answer questions smoothly and completely in 2 to 5 clear spoken sentences."""
             }
         }
 
         val enabledDocs = currentRagDocs.filter { it.isEnabled }
         if (enabledDocs.isEmpty()) return baseInstruction
 
-        val ragSection = enabledDocs.take(5).joinToString("\n") { "• ${it.title}: ${it.content.take(350)}" }
+        val ragSection = enabledDocs.take(5).joinToString("\n") { "• ${it.title}: ${it.content.take(400)}" }
         return "$baseInstruction\n\n[معلومات موثقة من قاعدة المعرفة]:\n$ragSection"
     }
 
@@ -315,11 +373,10 @@ class GeminiLiveWebSocketClient {
                 startAudioPlaybackLoop()
                 startMicrophoneStreamingLoop()
 
-                // Trigger a brief, natural royal greeting from native Gemini Live audio
                 val greetingPrompt = if (currentLanguage == AppLanguage.ARABIC) {
-                    "رحّب بالمستخدم ترحيباً صوتياً قصيراً جداً في خمس كلمات وأخبره أنك تستمع إليه الآن."
+                    "رحّب بالمستخدم ترحيباً ملكياً دافئاً في جملة قصيرة وأخبره أنك تستمع إليه الآن."
                 } else {
-                    "Greet the user warmly in five short words and say you are listening."
+                    "Greet the user warmly in one royal sentence and say you are listening."
                 }
                 sendTextMessage(greetingPrompt, showInUserTranscript = false)
                 return
@@ -327,17 +384,24 @@ class GeminiLiveWebSocketClient {
 
             val serverContent = root.optJSONObject("serverContent") ?: return
 
-            // 2. Barge-in Interruption: User spoke while AI was talking!
+            // 2. Server-side VAD Interruption:
+            // CRITICAL ECHO GUARD: If AI audio is currently playing (or in loudspeaker reverb tail),
+            // ignore spurious server `interrupted` events caused by acoustic speaker echo!
+            // Explicit user interruption via the golden Stop button (`interruptModelSpeech()`) always works immediately.
             if (serverContent.optBoolean("interrupted", false)) {
-                Log.d(TAG, "Barge-in detected: flushing AI audio playback immediately")
+                if (isEchoGateActive()) {
+                    Log.d(TAG, "Echo Guard: Ignored speaker-echo self-interruption while Ramses is speaking")
+                    return
+                }
+                Log.d(TAG, "User interruption detected: flushing AI audio playback")
                 flushAudioPlayback()
                 _voiceState.value = VoiceCallState.LISTENING
                 return
             }
 
-            // 3. Live User Speech Transcription
+            // 3. Live User Speech Transcription (ignored while AI is speaking so speaker echo isn't transcribed as user speech)
             val inputTranscription = serverContent.optJSONObject("inputTranscription")
-            if (inputTranscription != null) {
+            if (inputTranscription != null && !isEchoGateActive()) {
                 val chunk = inputTranscription.optString("text", "")
                 if (chunk.isNotEmpty()) {
                     if (isModelTurnComplete.get() && modelTranscriptBuffer.isNotEmpty()) {
@@ -354,6 +418,9 @@ class GeminiLiveWebSocketClient {
                 val chunk = outputTranscription.optString("text", "")
                 if (chunk.isNotEmpty()) {
                     isModelTurnComplete.set(false)
+                    if (!_isSpeakerMuted.value) {
+                        isAiAudioPlaying.set(true)
+                    }
                     modelTranscriptBuffer.append(chunk)
                     _liveModelTranscript.value = modelTranscriptBuffer.toString().trim()
                 }
@@ -374,6 +441,7 @@ class GeminiLiveWebSocketClient {
                             isModelTurnComplete.set(false)
                             val pcmBytes = Base64.decode(base64Audio, Base64.DEFAULT)
                             if (pcmBytes.isNotEmpty() && !_isSpeakerMuted.value) {
+                                isAiAudioPlaying.set(true)
                                 _voiceState.value = VoiceCallState.SPEAKING
                                 pcmPlaybackChannel.trySend(gen to pcmBytes)
                             }
@@ -382,7 +450,7 @@ class GeminiLiveWebSocketClient {
                 }
             }
 
-            // 6. Turn Complete -> Persist turn transcripts & return smoothly to LISTENING
+            // 6. Turn Complete -> Persist turn transcripts & enqueue sentinel to transition smoothly after speaker drains
             if (serverContent.optBoolean("turnComplete", false)) {
                 isModelTurnComplete.set(true)
                 val finalUser = userTranscriptBuffer.toString().trim()
@@ -392,7 +460,7 @@ class GeminiLiveWebSocketClient {
                 }
                 userTranscriptBuffer.setLength(0)
 
-                // Enqueue an empty sentinel chunk so state transitions to LISTENING right after AudioTrack finishes queued PCM
+                // Enqueue empty sentinel chunk so state transitions to LISTENING after AudioTrack finishes + reverb decays
                 pcmPlaybackChannel.trySend(playbackGeneration.get() to ByteArray(0))
             }
         } catch (e: Exception) {
@@ -417,6 +485,8 @@ class GeminiLiveWebSocketClient {
             userTranscriptBuffer.append(trimmed)
             _liveUserTranscript.value = trimmed
         }
+        // Activate echo guard slightly ahead of incoming greeting/response audio so mic stays clean
+        echoTailUntilElapsedMs.set(SystemClock.elapsedRealtime() + 450L)
         _voiceState.value = VoiceCallState.THINKING
 
         val payload = JSONObject().apply {
@@ -428,7 +498,7 @@ class GeminiLiveWebSocketClient {
     }
 
     /**
-     * Immediately interrupts AI voice playback (barge-in) and listens to the user.
+     * Explicitly interrupts AI voice playback (manual user barge-in button) and listens to the user immediately.
      */
     fun interruptModelSpeech() {
         flushAudioPlayback()
@@ -472,6 +542,8 @@ class GeminiLiveWebSocketClient {
 
     private fun flushAudioPlayback() {
         playbackGeneration.incrementAndGet()
+        isAiAudioPlaying.set(false)
+        echoTailUntilElapsedMs.set(0L)
         while (pcmPlaybackChannel.tryReceive().isSuccess) {
             // Drain stale PCM buffers immediately
         }
@@ -496,7 +568,7 @@ class GeminiLiveWebSocketClient {
                 AudioTrack.Builder()
                     .setAudioAttributes(
                         AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
                             .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                             .build()
                     )
@@ -523,16 +595,27 @@ class GeminiLiveWebSocketClient {
                     if (gen != playbackGeneration.get()) continue
 
                     if (pcmChunk.isEmpty()) {
-                        // Sentinel marking end of AI speech turn
+                        // Sentinel marking end of AI speech turn:
+                        // Hold mic gate for ECHO_TAIL_COOLDOWN_MS while hardware AudioTrack drains & room echo decays
                         _liveRmsDb.value = 0f
-                        if (_voiceState.value == VoiceCallState.SPEAKING) {
-                            _voiceState.value = if (_isMicMuted.value) VoiceCallState.IDLE else VoiceCallState.LISTENING
+                        echoTailUntilElapsedMs.set(SystemClock.elapsedRealtime() + ECHO_TAIL_COOLDOWN_MS)
+                        isAiAudioPlaying.set(false)
+
+                        delay(ECHO_TAIL_COOLDOWN_MS)
+                        if (gen == playbackGeneration.get() && !isAiAudioPlaying.get()) {
+                            if (_voiceState.value == VoiceCallState.SPEAKING || _voiceState.value == VoiceCallState.THINKING) {
+                                _voiceState.value = if (_isMicMuted.value) VoiceCallState.IDLE else VoiceCallState.LISTENING
+                            }
                         }
                         continue
                     }
 
-                    if (_isSpeakerMuted.value) continue
+                    if (_isSpeakerMuted.value) {
+                        isAiAudioPlaying.set(false)
+                        continue
+                    }
 
+                    isAiAudioPlaying.set(true)
                     _voiceState.value = VoiceCallState.SPEAKING
 
                     // Write in ~80ms slices (3840 bytes at 24kHz 16-bit) so lip-sync RMS updates at ~12.5 Hz smoothly!
@@ -549,6 +632,7 @@ class GeminiLiveWebSocketClient {
             } catch (e: Exception) {
                 Log.w(TAG, "AudioTrack loop ended: ${e.message}")
             } finally {
+                isAiAudioPlaying.set(false)
                 _liveRmsDb.value = 0f
                 try {
                     track.stop()
@@ -583,37 +667,62 @@ class GeminiLiveWebSocketClient {
             attachHardwareAudioEffects(recorder.audioSessionId)
 
             val buffer = ByteArray(PCM_CHUNK_BYTES)
+            val silenceBuffer = ByteArray(PCM_CHUNK_BYTES)
             try {
                 recorder.startRecording()
                 while (isActive && isSessionActive.get()) {
-                    if (_isMicMuted.value || !isSetupComplete.get()) {
-                        delay(60)
+                    if (!isSetupComplete.get()) {
+                        delay(50)
                         continue
                     }
 
+                    // Always read from AudioRecord to drain OS microphone ringbuffer without overflow
                     val readBytes = recorder.read(buffer, 0, buffer.size)
-                    if (readBytes > 0) {
-                        // Update UI RMS when user is speaking (LISTENING mode)
-                        if (_voiceState.value == VoiceCallState.LISTENING) {
-                            val micRms = computePcmRmsDb(buffer, 0, readBytes)
-                            _liveRmsDb.value = micRms
-                        }
+                    if (readBytes <= 0) {
+                        delay(20)
+                        continue
+                    }
 
-                        val chunkToEncode = if (readBytes == buffer.size) buffer else buffer.copyOf(readBytes)
-                        val b64 = Base64.encodeToString(chunkToEncode, Base64.NO_WRAP)
+                    if (_isMicMuted.value) {
+                        continue
+                    }
 
-                        val audioFrame = JSONObject().apply {
+                    // CRITICAL ECHO GUARD:
+                    // While Ramses's voice is playing through the speaker (or decaying in the room),
+                    // stream zeroed silence PCM instead of speaker-contaminated mic audio so Gemini's
+                    // VAD never mistakes Ramses's own voice for user interruption!
+                    if (isEchoGateActive()) {
+                        val silentSlice = if (readBytes == silenceBuffer.size) silenceBuffer else ByteArray(readBytes)
+                        val silentB64 = Base64.encodeToString(silentSlice, Base64.NO_WRAP)
+                        val silentFrame = JSONObject().apply {
                             put("realtimeInput", JSONObject().apply {
                                 put("audio", JSONObject().apply {
                                     put("mimeType", "audio/pcm;rate=16000")
-                                    put("data", b64)
+                                    put("data", silentB64)
                                 })
                             })
                         }
-                        webSocket?.send(audioFrame.toString())
-                    } else {
-                        delay(20)
+                        webSocket?.send(silentFrame.toString())
+                        continue
                     }
+
+                    if (_voiceState.value == VoiceCallState.LISTENING) {
+                        val micRms = computePcmRmsDb(buffer, 0, readBytes)
+                        _liveRmsDb.value = micRms
+                    }
+
+                    val chunkToEncode = if (readBytes == buffer.size) buffer else buffer.copyOf(readBytes)
+                    val b64 = Base64.encodeToString(chunkToEncode, Base64.NO_WRAP)
+
+                    val audioFrame = JSONObject().apply {
+                        put("realtimeInput", JSONObject().apply {
+                            put("audio", JSONObject().apply {
+                                put("mimeType", "audio/pcm;rate=16000")
+                                put("data", b64)
+                            })
+                        })
+                    }
+                    webSocket?.send(audioFrame.toString())
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Mic capture loop ended: ${e.message}")
@@ -647,6 +756,11 @@ class GeminiLiveWebSocketClient {
         }
     }
 
+    /**
+     * Enables hardware DSP Acoustic Echo Cancellation and Noise Suppression.
+     * Deliberately omits AutomaticGainControl (AGC) because AGC boosts residual loudspeaker
+     * reflections into the voice-activity threshold on mobile speakerphones.
+     */
     private fun attachHardwareAudioEffects(audioSessionId: Int) {
         try {
             if (AcousticEchoCanceler.isAvailable()) {
@@ -658,20 +772,13 @@ class GeminiLiveWebSocketClient {
                 noiseSuppressor = NoiseSuppressor.create(audioSessionId)?.apply { enabled = true }
             }
         } catch (_: Exception) {}
-        try {
-            if (AutomaticGainControl.isAvailable()) {
-                gainControl = AutomaticGainControl.create(audioSessionId)?.apply { enabled = true }
-            }
-        } catch (_: Exception) {}
     }
 
     private fun releaseAudioEffects() {
         try { echoCanceler?.release() } catch (_: Exception) {}
         try { noiseSuppressor?.release() } catch (_: Exception) {}
-        try { gainControl?.release() } catch (_: Exception) {}
         echoCanceler = null
         noiseSuppressor = null
-        gainControl = null
     }
 
     /**
@@ -697,6 +804,8 @@ class GeminiLiveWebSocketClient {
     fun stopSession() {
         isSessionActive.set(false)
         isSetupComplete.set(false)
+        isAiAudioPlaying.set(false)
+        echoTailUntilElapsedMs.set(0L)
         playbackGeneration.incrementAndGet()
 
         micCaptureJob?.cancel()
@@ -712,6 +821,8 @@ class GeminiLiveWebSocketClient {
             webSocket?.close(1000, "User ended Gemini Live session")
         } catch (_: Exception) {}
         webSocket = null
+
+        restoreAudioMode()
 
         _liveRmsDb.value = 0f
         _voiceState.value = VoiceCallState.IDLE

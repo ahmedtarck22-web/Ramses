@@ -147,92 +147,89 @@ fun Ramses3DArtifactDialog(
 
                 Spacer(modifier = Modifier.height(10.dp))
 
-                // Artifact Selector Tabs
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    artifacts.forEach { artifact ->
-                        val isSelected = artifact.id == selectedArtifact.id
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(
-                                    if (isSelected) Color(0xFF38290D) else Color(0xFF19160E)
-                                )
-                                .border(
-                                    width = if (isSelected) 1.5.dp else 0.5.dp,
-                                    color = if (isSelected) Color(0xFFFFDF73) else Color(0xFF4A3E20),
-                                    shape = RoundedCornerShape(12.dp)
-                                )
-                                .clickable { selectedArtifact = artifact }
-                                .padding(horizontal = 12.dp, vertical = 8.dp)
-                                .testTag("artifact_chip_${artifact.id}")
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Text(
-                                    text = artifact.iconEmoji,
-                                    fontSize = 14.sp
-                                )
-                                Text(
-                                    text = artifact.title(appLanguage),
-                                    color = if (isSelected) Color(0xFFFFDF73) else Color(0xFFC7B992),
-                                    fontSize = 12.sp,
-                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
-                                )
-                            }
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                // 3D Viewport
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(260.dp)
-                        .clip(RoundedCornerShape(16.dp))
-                        .border(1.dp, Color(0xFF443818), RoundedCornerShape(16.dp))
-                ) {
-                    RamsesSceneView(
-                        modifier = Modifier.fillMaxSize(),
-                        modelAssetPath = selectedArtifact.modelPath,
-                        showControls = true,
-                        initialAutoRotate = true
-                    )
-
-                    // Touch guide hint
-                    Surface(
-                        modifier = Modifier
-                            .align(Alignment.TopStart)
-                            .padding(8.dp),
-                        shape = RoundedCornerShape(8.dp),
-                        color = Color(0xAA0F0D09)
-                    ) {
-                        Text(
-                            text = if (isArabic) "اسحب للتدوير • استخدم الأزرار للتكبير" else "Drag to rotate • Buttons to zoom",
-                            color = Color(0xFFC7B992),
-                            fontSize = 10.sp,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                // Scrollable Description & Pharaonic Fact
+                // Unified Scrollable Body: Selector Tabs + 3D Viewport + Description + Historical Fact
                 Column(
                     modifier = Modifier
                         .weight(1f)
-                        .verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                        .verticalScroll(rememberScrollState())
+                        .testTag("artifact_dialog_scroll"),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
+                    // Artifact Selector Tabs
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        artifacts.forEach { artifact ->
+                            val isSelected = artifact.id == selectedArtifact.id
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(
+                                        if (isSelected) Color(0xFF38290D) else Color(0xFF19160E)
+                                    )
+                                    .border(
+                                        width = if (isSelected) 1.5.dp else 0.5.dp,
+                                        color = if (isSelected) Color(0xFFFFDF73) else Color(0xFF4A3E20),
+                                        shape = RoundedCornerShape(12.dp)
+                                    )
+                                    .clickable { selectedArtifact = artifact }
+                                    .padding(horizontal = 12.dp, vertical = 10.dp)
+                                    .testTag("artifact_chip_${artifact.id}")
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text(
+                                        text = artifact.iconEmoji,
+                                        fontSize = 14.sp
+                                    )
+                                    Text(
+                                        text = artifact.title(appLanguage),
+                                        color = if (isSelected) Color(0xFFFFDF73) else Color(0xFFC7B992),
+                                        fontSize = 12.sp,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // 3D Viewport
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(240.dp)
+                            .clip(RoundedCornerShape(16.dp))
+                            .border(1.dp, Color(0xFF443818), RoundedCornerShape(16.dp))
+                    ) {
+                        RamsesSceneView(
+                            modifier = Modifier.fillMaxSize(),
+                            modelAssetPath = selectedArtifact.modelPath,
+                            showControls = true,
+                            initialAutoRotate = true
+                        )
+
+                        // Touch guide hint
+                        Surface(
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .padding(8.dp),
+                            shape = RoundedCornerShape(8.dp),
+                            color = Color(0xAA0F0D09)
+                        ) {
+                            Text(
+                                text = if (isArabic) "اسحب للتدوير • استخدم الأزرار للتكبير" else "Drag to rotate • Buttons to zoom",
+                                color = Color(0xFFC7B992),
+                                fontSize = 10.sp,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+
                     // Title and Dynasty
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -324,7 +321,7 @@ fun Ramses3DArtifactDialog(
                     },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(46.dp)
+                        .height(48.dp)
                         .testTag("ask_ramses_about_artifact_button"),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = Color(0xFFD4AF37),

@@ -64,6 +64,7 @@ android {
     compose = true
     buildConfig = true
   }
+  androidResources { noCompress += "pack" }
   testOptions { unitTests { isIncludeAndroidResources = true } }
   dependenciesInfo {
     includeInApk = false

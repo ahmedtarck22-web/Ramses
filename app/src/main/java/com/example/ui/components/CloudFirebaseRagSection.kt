@@ -18,8 +18,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudDone
@@ -39,6 +37,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -212,7 +211,7 @@ fun CloudFirebaseRagSection(
                 shape = RoundedCornerShape(10.dp),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(40.dp)
+                    .heightIn(min = 48.dp)
                     .testTag("cloud_rag_google_signin_button")
             ) {
                 Icon(
@@ -244,7 +243,7 @@ fun CloudFirebaseRagSection(
                 shape = RoundedCornerShape(10.dp),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(42.dp)
+                    .heightIn(min = 48.dp)
                     .testTag("cloud_rag_upload_pdfs_button")
             ) {
                 Icon(
@@ -270,7 +269,7 @@ fun CloudFirebaseRagSection(
                 border = androidx.compose.foundation.BorderStroke(1.dp, EgyptianCyan.copy(alpha = 0.5f)),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(36.dp)
+                    .heightIn(min = 48.dp)
                     .testTag("cloud_rag_sync_five_button")
             ) {
                 Icon(
@@ -295,10 +294,11 @@ fun CloudFirebaseRagSection(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
+                .heightIn(min = 48.dp)
                 .clip(RoundedCornerShape(8.dp))
                 .background(Color(0x1FFFFFFF))
                 .clickable { showExplorer = !showExplorer }
-                .padding(horizontal = 10.dp, vertical = 6.dp)
+                .padding(horizontal = 10.dp, vertical = 8.dp)
                 .testTag("cloud_rag_toggle_explorer_button"),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
@@ -322,130 +322,133 @@ fun CloudFirebaseRagSection(
         }
 
         AnimatedVisibility(visible = showExplorer) {
-            LazyColumn(
+            // Plain Column (no nested LazyColumn) so parent verticalScroll works seamlessly everywhere
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 8.dp)
-                    .heightIn(max = 220.dp),
+                    .padding(top = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                items(books, key = { it.bookId }) { book ->
-                    val isBookExpanded = expandedBookId == book.bookId
-                    val bookFolders = remember(folders, book.bookId) {
-                        folders.filter { it.bookId == book.bookId }.sortedBy { it.folderIndex }
-                    }
-
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(Color(0x26081A2D))
-                            .border(0.8.dp, RoyalGold.copy(alpha = 0.28f), RoundedCornerShape(10.dp))
-                            .padding(8.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    expandedBookId = if (isBookExpanded) null else book.bookId
-                                },
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.MenuBook,
-                                    contentDescription = null,
-                                    tint = RoyalGold,
-                                    modifier = Modifier.size(15.dp)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Column {
-                                    Text(
-                                        text = book.title,
-                                        fontFamily = AmiriFontFamily,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 12.5.sp,
-                                        color = TextPrimary
-                                    )
-                                    Text(
-                                        text = "${book.author} • ${book.pageCount} ص • ${book.folderCount} مجلدات صغيرة • ${book.chunkCount} فقرة",
-                                        fontFamily = AmiriFontFamily,
-                                        fontSize = 10.5.sp,
-                                        color = EgyptianCyan
-                                    )
-                                }
-                            }
-                            Icon(
-                                imageVector = if (isBookExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                                contentDescription = null,
-                                tint = TextSecondary,
-                                modifier = Modifier.size(16.dp)
-                            )
+                books.forEach { book ->
+                    key(book.bookId) {
+                        val isBookExpanded = expandedBookId == book.bookId
+                        val bookFolders = remember(folders, book.bookId) {
+                            folders.filter { it.bookId == book.bookId }.sortedBy { it.folderIndex }
                         }
 
-                        if (isBookExpanded) {
-                            Spacer(modifier = Modifier.height(6.dp))
-                            for (folder in bookFolders) {
-                                val isFolderExpanded = expandedFolderId == folder.folderId
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(vertical = 2.dp)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(Color(0x1FFFFFFF))
-                                        .clickable {
-                                            if (isFolderExpanded) {
-                                                expandedFolderId = null
-                                            } else {
-                                                expandedFolderId = folder.folderId
-                                                if (!loadedChunks.containsKey(folder.folderId)) {
-                                                    onLoadFolderChunks(folder.folderId) { list ->
-                                                        loadedChunks = loadedChunks + (folder.folderId to list)
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(Color(0x26081A2D))
+                                .border(0.8.dp, RoyalGold.copy(alpha = 0.28f), RoundedCornerShape(10.dp))
+                                .padding(8.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 48.dp)
+                                    .clickable {
+                                        expandedBookId = if (isBookExpanded) null else book.bookId
+                                    },
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.MenuBook,
+                                        contentDescription = null,
+                                        tint = RoyalGold,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Column {
+                                        Text(
+                                            text = book.title,
+                                            fontFamily = AmiriFontFamily,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 12.5.sp,
+                                            color = TextPrimary
+                                        )
+                                        Text(
+                                            text = "${book.author} • ${book.pageCount} ص • ${book.folderCount} مجلدات صغيرة • ${book.chunkCount} فقرة",
+                                            fontFamily = AmiriFontFamily,
+                                            fontSize = 10.5.sp,
+                                            color = EgyptianCyan
+                                        )
+                                    }
+                                }
+                                Icon(
+                                    imageVector = if (isBookExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                    contentDescription = null,
+                                    tint = TextSecondary,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+
+                            if (isBookExpanded) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                for (folder in bookFolders) {
+                                    val isFolderExpanded = expandedFolderId == folder.folderId
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 2.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(Color(0x1FFFFFFF))
+                                            .clickable {
+                                                if (isFolderExpanded) {
+                                                    expandedFolderId = null
+                                                } else {
+                                                    expandedFolderId = folder.folderId
+                                                    if (!loadedChunks.containsKey(folder.folderId)) {
+                                                        onLoadFolderChunks(folder.folderId) { list ->
+                                                            loadedChunks = loadedChunks + (folder.folderId to list)
+                                                        }
                                                     }
                                                 }
                                             }
-                                        }
-                                        .padding(horizontal = 8.dp, vertical = 5.dp)
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(
-                                            imageVector = Icons.Default.Folder,
-                                            contentDescription = null,
-                                            tint = EgyptianCyan,
-                                            modifier = Modifier.size(13.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(5.dp))
-                                        Text(
-                                            text = "مجلد ${folder.folderIndex}: ${folder.folderTitle} (${folder.pageRange})",
-                                            fontFamily = AmiriFontFamily,
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 11.5.sp,
-                                            color = RoyalGoldLight,
-                                            modifier = Modifier.weight(1f)
-                                        )
-                                    }
-                                    Text(
-                                        text = "${folder.chunkCount} نسخ RAG • ${folder.topicSummary.take(90)}...",
-                                        fontFamily = AmiriFontFamily,
-                                        fontSize = 10.sp,
-                                        color = TextSecondary
-                                    )
-
-                                    if (isFolderExpanded) {
-                                        val folderChunks = loadedChunks[folder.folderId].orEmpty()
-                                        Spacer(modifier = Modifier.height(4.dp))
-                                        for (ch in folderChunks.take(4)) {
-                                            Text(
-                                                text = "• [${ch.pageRange}] ${ch.content.take(120)}...",
-                                                fontFamily = AmiriFontFamily,
-                                                fontSize = 10.sp,
-                                                color = Color(0xFFE2E8F0),
-                                                modifier = Modifier.padding(vertical = 2.dp)
+                                            .padding(horizontal = 8.dp, vertical = 6.dp)
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(
+                                                imageVector = Icons.Default.Folder,
+                                                contentDescription = null,
+                                                tint = EgyptianCyan,
+                                                modifier = Modifier.size(13.dp)
                                             )
+                                            Spacer(modifier = Modifier.width(5.dp))
+                                            Text(
+                                                text = "مجلد ${folder.folderIndex}: ${folder.folderTitle} (${folder.pageRange})",
+                                                fontFamily = AmiriFontFamily,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 11.5.sp,
+                                                color = RoyalGoldLight,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                        }
+                                        Text(
+                                            text = "${folder.chunkCount} نسخ RAG • ${folder.topicSummary.take(90)}...",
+                                            fontFamily = AmiriFontFamily,
+                                            fontSize = 10.sp,
+                                            color = TextSecondary
+                                        )
+
+                                        if (isFolderExpanded) {
+                                            val folderChunks = loadedChunks[folder.folderId].orEmpty()
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            for (ch in folderChunks.take(4)) {
+                                                Text(
+                                                    text = "• [${ch.pageRange}] ${ch.content.take(120)}...",
+                                                    fontFamily = AmiriFontFamily,
+                                                    fontSize = 10.sp,
+                                                    color = Color(0xFFE2E8F0),
+                                                    modifier = Modifier.padding(vertical = 2.dp)
+                                                )
+                                            }
                                         }
                                     }
                                 }

@@ -10,11 +10,11 @@ class ExampleUnitTest {
     @Test
     fun testRamsesModelConfiguration() {
         val models = com.example.data.api.GeminiApiClient.CANDIDATE_MODELS
-        assertTrue(models.contains("gemini-2.0-flash"))
-        assertTrue(models.contains("gemini-1.5-flash"))
-        assertTrue(models.contains("gemini-2.0-flash-lite"))
-        assertTrue(models.contains("gemini-1.5-pro"))
-        // Verify no unsupported or retired models
+        assertTrue(models.contains("gemini-3.1-flash-lite"))
+        assertTrue(models.contains("gemini-3.5-flash-lite"))
+        assertTrue(models.contains("gemini-3.8-flash"))
+        assertTrue(models.contains("gemini-3-flash-preview"))
+        // Verify retired legacy models are not in primary candidate list
         org.junit.Assert.assertFalse(models.contains("gemini-2.5-flash"))
     }
 
@@ -85,8 +85,8 @@ class ExampleUnitTest {
             com.example.data.api.GeminiApiClient.resolveActiveModelName("gemini-2.0-flash")
         )
         assertEquals(
-            "gemini-3.5-flash",
-            com.example.data.api.GeminiApiClient.resolveActiveModelName("gemini-1.5-pro")
+            "gemini-3.8-flash",
+            com.example.data.api.GeminiApiClient.resolveActiveModelName("gemini-3.8-flash")
         )
         assertTrue(
             com.example.service.GeminiLiveWebSocketClient.LIVE_CANDIDATE_MODELS.contains(

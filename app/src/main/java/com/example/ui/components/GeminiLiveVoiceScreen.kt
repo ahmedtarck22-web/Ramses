@@ -73,6 +73,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -82,6 +83,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.example.R
 import com.example.data.model.AppLanguage
 import com.example.data.model.AppStrings
 import com.example.data.model.AvatarRigConfig
@@ -364,10 +366,16 @@ fun GeminiLiveVoiceScreen(
                 // 3. Dedicated AI & Conversation Response Section directly below the avatar
                 val responseScrollState = rememberScrollState()
 
+                LaunchedEffect(lastRamsesSpeech.length) {
+                    if (lastRamsesSpeech.isNotBlank() && !responseScrollState.isScrollInProgress && responseScrollState.maxValue > 0) {
+                        responseScrollState.animateScrollTo(responseScrollState.maxValue)
+                    }
+                }
+
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(min = 85.dp, max = 150.dp)
+                        .heightIn(min = 88.dp, max = 165.dp)
                         .padding(horizontal = 4.dp),
                     shape = RoundedCornerShape(20.dp),
                     color = Color(0x660B172E),
@@ -377,16 +385,28 @@ fun GeminiLiveVoiceScreen(
                     )
                 ) {
                     Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(horizontal = 16.dp, vertical = 12.dp)
-                            .verticalScroll(responseScrollState),
+                        modifier = Modifier.fillMaxWidth(),
                         contentAlignment = Alignment.Center
                     ) {
                         Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .verticalScroll(responseScrollState)
+                                .testTag("live_voice_response_scroll")
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
                             horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                            verticalArrangement = Arrangement.spacedBy(5.dp)
                         ) {
+                            if (voiceCallState == VoiceCallState.SPEAKING) {
+                                Text(
+                                    text = stringResource(if (isArabic) R.string.live_echo_guard_ar else R.string.live_echo_guard_en),
+                                    fontFamily = if (isArabic) AmiriFontFamily else CinzelFontFamily,
+                                    fontSize = 11.sp,
+                                    color = Color(0xFF34D399),
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+
                             if (lastTranscript.isNotBlank()) {
                                 Text(
                                     text = "« $lastTranscript »",
@@ -433,7 +453,7 @@ fun GeminiLiveVoiceScreen(
                                 }
                                 voiceCallState == VoiceCallState.LISTENING -> {
                                     Text(
-                                        text = if (isArabic) "« تحدّث بحرية في أي وقت.. رمسيس يسمعك مباشرة ويمكنك مقاطعته »" else "« Speak freely anytime.. Rameses hears you live with instant barge-in »",
+                                        text = if (isArabic) "« تحدّث بحرية في أي وقت.. رمسيس يسمعك مباشرة دون تداخل صدى السماعة »" else "« Speak freely anytime.. Rameses hears you clearly with Acoustic Echo Guard »",
                                         fontFamily = if (isArabic) AmiriFontFamily else CinzelFontFamily,
                                         fontSize = 13.sp,
                                         color = Color(0xFF00E5FF).copy(alpha = 0.88f),

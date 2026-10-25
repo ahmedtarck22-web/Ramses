@@ -13,4 +13,7 @@
     <string name="cloud_rag_hub_title">مكتبة سحابة Firebase المقسمة لمجلدات صغيرة (RAG)</string>
     <string name="cloud_rag_upload_pdfs_btn">تحويل ورفع كتب PDF تلقائياً لسحابة Firebase (حتى 1000 كتاب)</string>
     <string name="cloud_rag_zero_apk_badge">0 ميجابايت زيادة في حجم التطبيق • تخزين سحابي ذكي</string>
+    <string name="scroll_to_bottom_desc">النزول إلى آخر المحادثة</string>
+    <string name="live_echo_guard_ar">عزل صدى الصوت نشط • اضغط الزر الذهبي لمقاطعة رمسيس</string>
+    <string name="live_echo_guard_en">Echo Guard Active • Tap gold button to interrupt</string>
 </resources>

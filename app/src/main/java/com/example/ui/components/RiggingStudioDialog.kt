@@ -11,8 +11,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -56,6 +56,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -67,6 +68,7 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -663,58 +665,48 @@ private fun InteractiveRigCanvas(
     modifier: Modifier = Modifier
 ) {
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
-    var draggingJointId by remember { mutableStateOf<String?>(null) }
+    val latestJoints by rememberUpdatedState(joints)
+    val latestOnSelectJoint by rememberUpdatedState(onSelectJoint)
+    val latestOnUpdateJoint by rememberUpdatedState(onUpdateJoint)
 
     Canvas(
         modifier = modifier
             .onSizeChanged { canvasSize = it }
-            .pointerInput(joints, canvasSize) {
-                detectTapGestures { tapOffset ->
-                    if (canvasSize.width <= 0 || canvasSize.height <= 0) return@detectTapGestures
-                    val nearest = joints.minByOrNull { j ->
-                        hypot(j.x * canvasSize.width - tapOffset.x, j.y * canvasSize.height - tapOffset.y)
-                    }
-                    if (nearest != null) {
-                        val dist = hypot(
-                            nearest.x * canvasSize.width - tapOffset.x,
-                            nearest.y * canvasSize.height - tapOffset.y
-                        )
-                        if (dist <= 64f) {
-                            onSelectJoint(nearest.id)
+            .pointerInput(canvasSize) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    if (canvasSize.width <= 0 || canvasSize.height <= 0) return@awaitEachGesture
+                    val nearest = latestJoints.minByOrNull { j ->
+                        hypot(j.x * canvasSize.width - down.position.x, j.y * canvasSize.height - down.position.y)
+                    } ?: return@awaitEachGesture
+
+                    val dist = hypot(
+                        nearest.x * canvasSize.width - down.position.x,
+                        nearest.y * canvasSize.height - down.position.y
+                    )
+                    // Pass gesture through to parent verticalScroll if touch is not on a joint handle
+                    if (dist > 75f) return@awaitEachGesture
+
+                    val activeId = nearest.id
+                    latestOnSelectJoint(activeId)
+
+                    val pointerId = down.id
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull { it.id == pointerId } ?: break
+                        if (!change.pressed) break
+                        val delta = change.positionChange()
+                        if (delta != Offset.Zero) {
+                            change.consume()
+                            val current = latestJoints.firstOrNull { it.id == activeId }
+                            if (current != null && canvasSize.width > 0 && canvasSize.height > 0) {
+                                val nextX = (current.x + delta.x / canvasSize.width).coerceIn(0.06f, 0.94f)
+                                val nextY = (current.y + delta.y / canvasSize.height).coerceIn(0.06f, 0.94f)
+                                latestOnUpdateJoint(activeId, nextX, nextY)
+                            }
                         }
                     }
                 }
-            }
-            .pointerInput(joints, canvasSize) {
-                detectDragGestures(
-                    onDragStart = { startOffset ->
-                        if (canvasSize.width <= 0 || canvasSize.height <= 0) return@detectDragGestures
-                        val nearest = joints.minByOrNull { j ->
-                            hypot(j.x * canvasSize.width - startOffset.x, j.y * canvasSize.height - startOffset.y)
-                        }
-                        if (nearest != null) {
-                            val dist = hypot(
-                                nearest.x * canvasSize.width - startOffset.x,
-                                nearest.y * canvasSize.height - startOffset.y
-                            )
-                            if (dist <= 75f) {
-                                draggingJointId = nearest.id
-                                onSelectJoint(nearest.id)
-                            }
-                        }
-                    },
-                    onDragEnd = { draggingJointId = null },
-                    onDragCancel = { draggingJointId = null },
-                    onDrag = { change, dragAmount ->
-                        val activeId = draggingJointId ?: return@detectDragGestures
-                        if (canvasSize.width <= 0 || canvasSize.height <= 0) return@detectDragGestures
-                        change.consume()
-                        val current = joints.firstOrNull { it.id == activeId } ?: return@detectDragGestures
-                        val nextX = (current.x + dragAmount.x / canvasSize.width).coerceIn(0.06f, 0.94f)
-                        val nextY = (current.y + dragAmount.y / canvasSize.height).coerceIn(0.06f, 0.94f)
-                        onUpdateJoint(activeId, nextX, nextY)
-                    }
-                )
             }
     ) {
         val w = size.width

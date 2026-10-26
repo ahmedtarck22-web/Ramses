@@ -580,7 +580,7 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
 
         cloudBooksListenerJob = viewModelScope.launch(Dispatchers.IO) {
             val seedBooksById = cloudRagRepo.loadBundledFiveBooks().associate { it.book.bookId to it.book }
-            cloudRagRepo.observeSharedBooks()
+            cloudRagRepo.observeAccessibleBooks()
                 .catch { e ->
                     Log.w("RamsesVM", "Cloud RAG books listener error: ${e.message}", e)
                 }
@@ -594,7 +594,7 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
             val seedFoldersById = cloudRagRepo.loadBundledFiveBooks()
                 .flatMap { it.folders }
                 .associateBy { it.folderId }
-            cloudRagRepo.observeSharedFolders()
+            cloudRagRepo.observeAccessibleFolders()
                 .catch { e ->
                     Log.w("RamsesVM", "Cloud RAG folders listener error: ${e.message}", e)
                 }

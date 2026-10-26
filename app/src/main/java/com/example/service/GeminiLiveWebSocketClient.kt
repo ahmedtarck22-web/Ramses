@@ -283,12 +283,14 @@ class GeminiLiveWebSocketClient(
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                Log.w(TAG, "WebSocket closing ($code): $reason")
+                val safeReason = SecureKeyStoreHelper.redactSecret(reason, currentApiKey)
+                Log.w(TAG, "WebSocket closing ($code): $safeReason")
                 webSocket.close(code, reason)
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                Log.w(TAG, "WebSocket closed ($code): $reason")
+                val safeReason = SecureKeyStoreHelper.redactSecret(reason, currentApiKey)
+                Log.w(TAG, "WebSocket closed ($code): $safeReason")
                 if (isSessionActive.get() && !isSetupComplete.get()) {
                     scope.launch {
                         connectWithModelIndex(index + 1)

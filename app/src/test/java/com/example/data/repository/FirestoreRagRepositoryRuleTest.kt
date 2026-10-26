@@ -442,6 +442,360 @@ class FirestoreRagRepositoryRuleTest : FirestoreEmulatorTestBase() {
         assertFalse(chunkSnap.exists())
     }
 
+    @Test
+    fun observeSharedFolders_emitsBookScopedFoldersAndDropsImmediatelyOnRevocation() = runBlocking {
+        val aliceUid = signInTestUser(ALICE_EMAIL)
+        val aliceRepo = FirestoreRagRepository(
+            db = firestore,
+            appContext = null,
+            authProvider = { auth.currentUser?.uid ?: aliceUid }
+        )
+        val suffix = UUID.randomUUID().toString().replace("-", "").take(10)
+        val bundle = buildTestBundle(suffix, isShared = true)
+        val folderId = bundle.folders.first().folderId
+
+        withTimeout(DEFAULT_TIMEOUT_MS) { aliceRepo.uploadBookBundle(bundle).getOrThrow() }
+
+        // Bob observes shared folders (aligned via bookId whereIn slices) and sees Alice's shared folder
+        val bobUid = signInTestUser(BOB_EMAIL)
+        val bobRepo = FirestoreRagRepository(
+            db = firestore,
+            appContext = null,
+            authProvider = { auth.currentUser?.uid ?: bobUid }
+        )
+        val emittedForBob = withTimeout(FLOW_TIMEOUT_MS) {
+            bobRepo.observeSharedFolders().first { list -> list.any { it.folderId == folderId } }
+        }
+        assertTrue(emittedForBob.any { it.folderId == folderId })
+
+        // Alice revokes sharing on the book
+        signInTestUser(ALICE_EMAIL)
+        withTimeout(DEFAULT_TIMEOUT_MS) { aliceRepo.setBookShared(bundle.book.bookId, false).getOrThrow() }
+
+        // Owner Alice's observeAccessibleFolders STILL includes her own private folder
+        val aliceAccessible = withTimeout(FLOW_TIMEOUT_MS) {
+            aliceRepo.observeAccessibleFolders().first { list -> list.any { it.folderId == folderId && !it.isShared } }
+        }
+        assertTrue(aliceAccessible.any { it.folderId == folderId })
+
+        // Bob's observeSharedFolders excludes Alice's revoked folder
+        signInTestUser(BOB_EMAIL)
+        val bobAfterRevoke = withTimeout(FLOW_TIMEOUT_MS) {
+            bobRepo.observeSharedFolders().first { list -> list.none { it.folderId == folderId } }
+        }
+        assertFalse(bobAfterRevoke.any { it.folderId == folderId })
+    }
+
+    @Test
+    fun privateParentAndRevokedSharing_blocksRawGetAndListOnChildFoldersAndChunks() = runBlocking {
+        val aliceUid = signInTestUser(ALICE_EMAIL)
+        val aliceRepo = FirestoreRagRepository(
+            db = firestore,
+            appContext = null,
+            authProvider = { auth.currentUser?.uid ?: aliceUid }
+        )
+        val suffix = UUID.randomUUID().toString().replace("-", "").take(10)
+
+        // 1. Alice uploads a private book bundle (isShared = false)
+        val privBundle = buildTestBundle("priv_$suffix", isShared = false)
+        withTimeout(DEFAULT_TIMEOUT_MS) { aliceRepo.uploadBookBundle(privBundle).getOrThrow() }
+
+        // 2. Alice uploads a shared book bundle, then revokes ONLY the parent rag_books doc (mid-cascade state)
+        val midRevokeBundle = buildTestBundle("mid_$suffix", isShared = true)
+        withTimeout(DEFAULT_TIMEOUT_MS) { aliceRepo.uploadBookBundle(midRevokeBundle).getOrThrow() }
+        withTimeout(DEFAULT_TIMEOUT_MS) {
+            firestore.collection("rag_books").document(midRevokeBundle.book.bookId)
+                .update(
+                    mapOf(
+                        "isShared" to false,
+                        "updatedAt" to com.google.firebase.firestore.FieldValue.serverTimestamp()
+                    )
+                ).await()
+        }
+
+        // Switch to Bob and verify EVERY raw get and list against private-parent and mid-revoked children fails with PERMISSION_DENIED
+        signInTestUser(BOB_EMAIL)
+
+        suspend fun assertPermissionDenied(label: String, block: suspend () -> Any?) {
+            var caught: Throwable? = null
+            try {
+                withTimeout(DEFAULT_TIMEOUT_MS) { block() }
+            } catch (t: Throwable) {
+                caught = t
+            }
+            assertNotNull("Expected PERMISSION_DENIED for $label", caught)
+            val fsEx = caught?.unwrapFirestoreException()
+            assertNotNull("Expected FirebaseFirestoreException for $label, got $caught", fsEx)
+            assertEquals("Unexpected code for $label", FirebaseFirestoreException.Code.PERMISSION_DENIED, fsEx?.code)
+        }
+
+        // Unscoped rag_folders list (without bookId) must be denied
+        assertPermissionDenied("unscoped rag_folders list") {
+            firestore.collection("rag_folders").whereEqualTo("isShared", true).get().await()
+        }
+
+        // Private parent book -> child folder & chunk get + list denied
+        val privBookId = privBundle.book.bookId
+        val privFolderId = privBundle.folders.first().folderId
+        val privChunkId = privBundle.chunks.first().chunkId
+        assertPermissionDenied("private folder get") {
+            firestore.collection("rag_folders").document(privFolderId).get().await()
+        }
+        assertPermissionDenied("private folder list by bookId") {
+            firestore.collection("rag_folders")
+                .whereEqualTo("isShared", true)
+                .whereEqualTo("bookId", privBookId)
+                .get().await()
+        }
+        assertPermissionDenied("private chunk get") {
+            firestore.collection("rag_chunks").document(privChunkId).get().await()
+        }
+        assertPermissionDenied("private chunk list by folderId") {
+            firestore.collection("rag_chunks")
+                .whereEqualTo("isShared", true)
+                .whereEqualTo("folderId", privFolderId)
+                .get().await()
+        }
+
+        // Mid-revocation parent book (book.isShared == false while child folder/chunk still have isShared == true) -> BOTH get AND list denied!
+        val midBookId = midRevokeBundle.book.bookId
+        val midFolderId = midRevokeBundle.folders.first().folderId
+        val midChunkId = midRevokeBundle.chunks.first().chunkId
+        assertPermissionDenied("mid-revoke book get") {
+            firestore.collection("rag_books").document(midBookId).get().await()
+        }
+        assertPermissionDenied("mid-revoke child folder get") {
+            firestore.collection("rag_folders").document(midFolderId).get().await()
+        }
+        assertPermissionDenied("mid-revoke child folder list") {
+            firestore.collection("rag_folders")
+                .whereEqualTo("isShared", true)
+                .whereEqualTo("bookId", midBookId)
+                .get().await()
+        }
+        assertPermissionDenied("mid-revoke child chunk get") {
+            firestore.collection("rag_chunks").document(midChunkId).get().await()
+        }
+        assertPermissionDenied("mid-revoke child chunk list") {
+            firestore.collection("rag_chunks")
+                .whereEqualTo("isShared", true)
+                .whereEqualTo("folderId", midFolderId)
+                .get().await()
+        }
+    }
+
+    @Test
+    fun crossUserAccess_blocksChatSessionsMessagesAndForeignChildAttachment() = runBlocking {
+        val aliceUid = signInTestUser(ALICE_EMAIL)
+        val chatRepo = FirestoreChatRepository(firestore)
+        val aliceRagRepo = FirestoreRagRepository(
+            db = firestore,
+            appContext = null,
+            authProvider = { auth.currentUser?.uid ?: aliceUid }
+        )
+        val suffix = UUID.randomUUID().toString().replace("-", "").take(10)
+        val sessionId = "sess_iso_$suffix"
+        val messageId = "msg_iso_$suffix"
+
+        withTimeout(DEFAULT_TIMEOUT_MS) {
+            chatRepo.saveSession(
+                ChatSession(id = sessionId, title = "جلسة خاصة", createdAt = 1000L, updatedAt = 1000L),
+                aliceUid
+            )
+            chatRepo.saveMessage(
+                ChatMessageEntity(id = messageId, sessionId = sessionId, sender = "USER", text = "سؤال خاص", timestamp = 1000L),
+                aliceUid
+            )
+        }
+
+        val sharedBundle = buildTestBundle("shared_foreign_$suffix", isShared = true)
+        withTimeout(DEFAULT_TIMEOUT_MS) { aliceRagRepo.uploadBookBundle(sharedBundle).getOrThrow() }
+
+        // Sign in as Bob
+        val bobUid = signInTestUser(BOB_EMAIL)
+
+        suspend fun assertDenied(label: String, block: suspend () -> Any?) {
+            var caught: Throwable? = null
+            try {
+                withTimeout(DEFAULT_TIMEOUT_MS) { block() }
+            } catch (t: Throwable) {
+                caught = t
+            }
+            assertNotNull("Expected PERMISSION_DENIED for $label", caught)
+            assertEquals(
+                FirebaseFirestoreException.Code.PERMISSION_DENIED,
+                caught?.unwrapFirestoreException()?.code
+            )
+        }
+
+        // Bob cannot get or list Alice's sessions or messages
+        assertDenied("cross-user session get") {
+            firestore.collection("users").document(aliceUid)
+                .collection("sessions").document(sessionId).get().await()
+        }
+        assertDenied("cross-user sessions list") {
+            firestore.collection("users").document(aliceUid)
+                .collection("sessions").get().await()
+        }
+        assertDenied("cross-user message get") {
+            firestore.collection("users").document(aliceUid)
+                .collection("sessions").document(sessionId)
+                .collection("messages").document(messageId).get().await()
+        }
+        assertDenied("cross-user messages list") {
+            firestore.collection("users").document(aliceUid)
+                .collection("sessions").document(sessionId)
+                .collection("messages").get().await()
+        }
+
+        // Bob cannot attach his own folder or chunk under Alice's shared book/folder
+        val injectedFolderId = "bob_inj_f_$suffix"
+        val injectedFolderPayload = CloudRagFolder(
+            docId = injectedFolderId,
+            folderId = injectedFolderId,
+            bookId = sharedBundle.book.bookId,
+            bookTitle = sharedBundle.book.title,
+            isShared = true,
+            folderIndex = 99,
+            folderTitle = "مجلد دخيل",
+            category = "عام",
+            pageRange = "ص 1",
+            topicSummary = "محاولة ربط مجلد بكتاب مستخدم آخر",
+            chunkCount = 1,
+            keywords = listOf("رمسيس")
+        ).toCreateMap(bobUid)
+        assertDenied("foreign child folder attachment") {
+            firestore.collection("rag_folders").document(injectedFolderId).set(injectedFolderPayload).await()
+        }
+
+        val injectedChunkId = "bob_inj_c_$suffix"
+        val injectedChunkPayload = CloudRagChunk(
+            docId = injectedChunkId,
+            chunkId = injectedChunkId,
+            bookId = sharedBundle.book.bookId,
+            bookTitle = sharedBundle.book.title,
+            folderId = sharedBundle.folders.first().folderId,
+            folderTitle = sharedBundle.folders.first().folderTitle,
+            isShared = true,
+            chunkIndex = 99,
+            pageRange = "ص 1",
+            title = "فقرة دخيلة",
+            content = "محاولة ربط فقرة بمجلد مستخدم آخر",
+            keywords = listOf("رمسيس")
+        ).toCreateMap(bobUid)
+        assertDenied("foreign child chunk attachment") {
+            firestore.collection("rag_chunks").document(injectedChunkId).set(injectedChunkPayload).await()
+        }
+    }
+
+    @Test
+    fun invalidKeywordLists_rejectedByFirestoreRulesAcrossCreateAndUpdate() = runBlocking {
+        val aliceUid = signInTestUser(ALICE_EMAIL)
+        val suffix = UUID.randomUUID().toString().replace("-", "").take(10)
+
+        suspend fun assertWriteDenied(label: String, block: suspend () -> Any?) {
+            var caught: Throwable? = null
+            try {
+                withTimeout(DEFAULT_TIMEOUT_MS) { block() }
+            } catch (t: Throwable) {
+                caught = t
+            }
+            assertNotNull("Expected PERMISSION_DENIED for $label", caught)
+            assertEquals(
+                "Expected PERMISSION_DENIED for $label",
+                FirebaseFirestoreException.Code.PERMISSION_DENIED,
+                caught?.unwrapFirestoreException()?.code
+            )
+        }
+
+        fun rawBookPayload(bookId: String, rawKeywords: Any): Map<String, Any> = mapOf(
+            "bookId" to bookId,
+            "ownerId" to aliceUid,
+            "isShared" to true,
+            "title" to "كتاب اختبار الكلمات المفتاحية",
+            "author" to "مؤلف",
+            "eraCategory" to "عصر الدولة الحديثة",
+            "summary" to "ملخص اختباري للتحقق من قواعد الكلمات المفتاحية.",
+            "pageCount" to 10,
+            "folderCount" to 1,
+            "chunkCount" to 1,
+            "keywords" to rawKeywords,
+            "createdAt" to com.google.firebase.firestore.FieldValue.serverTimestamp(),
+            "updatedAt" to com.google.firebase.firestore.FieldValue.serverTimestamp()
+        )
+
+        // 1. Empty string element rejected
+        assertWriteDenied("empty string keyword") {
+            val bid = "kw_empty_$suffix"
+            firestore.collection("rag_books").document(bid)
+                .set(rawBookPayload(bid, listOf("رمسيس", ""))).await()
+        }
+
+        // 2. Non-string element at non-zero index rejected
+        assertWriteDenied("non-string keyword at index 2") {
+            val bid = "kw_nonstr_$suffix"
+            firestore.collection("rag_books").document(bid)
+                .set(rawBookPayload(bid, listOf("رمسيس", "قادش", 12345))).await()
+        }
+
+        // 3. Overlong >100-char string element rejected
+        assertWriteDenied("overlong 101-char keyword") {
+            val bid = "kw_long_$suffix"
+            firestore.collection("rag_books").document(bid)
+                .set(rawBookPayload(bid, listOf("رمسيس", "أ".repeat(101)))).await()
+        }
+
+        // 4. Oversized >40-element list on rag_books rejected
+        assertWriteDenied("41 keywords on rag_books") {
+            val bid = "kw_41_$suffix"
+            val fortyOne = (1..41).map { "كلمة_$it" }
+            firestore.collection("rag_books").document(bid)
+                .set(rawBookPayload(bid, fortyOne)).await()
+        }
+
+        // 5. Delimiter injection rejected
+        assertWriteDenied("unit-separator delimiter injection") {
+            val bid = "kw_delim_$suffix"
+            val injected = "أ".repeat(60) + "\u001F" + "ب".repeat(60)
+            firestore.collection("rag_books").document(bid)
+                .set(rawBookPayload(bid, listOf(injected))).await()
+        }
+
+        // 6. Client model sanitization (toCreateMap) cleans dirty inputs so legitimate upload succeeds,
+        //    and subsequent raw update with invalid keywords is rejected!
+        val cleanId = "kw_clean_$suffix"
+        val dirtyBook = CloudRagBook(
+            docId = cleanId,
+            bookId = cleanId,
+            isShared = true,
+            title = "كتاب منقّح",
+            author = "مؤلف",
+            eraCategory = "تاريخ",
+            summary = "ملخص صالح",
+            pageCount = 12,
+            folderCount = 0,
+            chunkCount = 0,
+            keywords = listOf("  رمسيس\u001Fالثاني  ", "", "   ", "م".repeat(140)) + (1..45).map { "وسم_$it" }
+        )
+        withTimeout(DEFAULT_TIMEOUT_MS) {
+            firestore.collection("rag_books").document(cleanId)
+                .set(dirtyBook.toCreateMap(aliceUid)).await()
+        }
+        assertWriteDenied("invalid keyword list on update") {
+            firestore.collection("rag_books").document(cleanId)
+                .update(
+                    mapOf(
+                        "keywords" to listOf("صحيح", ""),
+                        "updatedAt" to com.google.firebase.firestore.FieldValue.serverTimestamp()
+                    )
+                ).await()
+        }
+        withTimeout(DEFAULT_TIMEOUT_MS) {
+            firestore.collection("rag_books").document(cleanId).delete().await()
+        }
+        Unit
+    }
+
     private companion object {
         const val ALICE_EMAIL = "alice.ramses@test.com"
         const val BOB_EMAIL = "bob.ramses@test.com"

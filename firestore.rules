@@ -89,21 +89,21 @@ service cloud.firestore {
              (!('lastActiveAt' in data) || (data.lastActiveAt is timestamp && data.lastActiveAt <= request.time));
     }
 
-    function isValidChatSession(data, userId) {
+    function isValidChatSession(data, userId, sessionId) {
       return data.keys().hasAll(['id', 'userId', 'title']) &&
              data.keys().hasOnly(['id', 'userId', 'title', 'createdAt', 'updatedAt']) &&
-             data.id is string && data.id.size() >= 1 && data.id.size() <= 128 &&
+             data.id is string && data.id == sessionId &&
              data.userId is string && data.userId == userId &&
              data.title is string && data.title.size() > 0 && data.title.size() <= 200 &&
              (!('createdAt' in data) || (data.createdAt is timestamp && data.createdAt <= request.time)) &&
              (!('updatedAt' in data) || (data.updatedAt is timestamp && data.updatedAt <= request.time));
     }
 
-    function isValidChatMessage(data, userId) {
+    function isValidChatMessage(data, userId, sessionId, messageId) {
       return data.keys().hasAll(['id', 'sessionId', 'userId', 'sender', 'text']) &&
              data.keys().hasOnly(['id', 'sessionId', 'userId', 'sender', 'text', 'timestamp', 'isVoiceResponse', 'isError']) &&
-             data.id is string && data.id.size() >= 1 && data.id.size() <= 128 &&
-             data.sessionId is string && data.sessionId.size() >= 1 && data.sessionId.size() <= 128 &&
+             data.id is string && data.id == messageId &&
+             data.sessionId is string && data.sessionId == sessionId &&
              data.userId is string && data.userId == userId &&
              data.sender is string && data.sender in ['USER', 'RAMSES'] &&
              data.text is string && data.text.size() <= 20000 &&
@@ -125,8 +125,8 @@ service cloud.firestore {
       match /sessions/{sessionId} {
         allow get: if isOwner(userId) && isValidId(sessionId);
         allow list: if isOwner(userId);
-        allow create: if isOwner(userId) && isValidId(sessionId) && isValidChatSession(incoming(), userId);
-        allow update: if isOwner(userId) && isValidId(sessionId) && isValidChatSession(incoming(), userId) &&
+        allow create: if isOwner(userId) && isValidId(sessionId) && isValidChatSession(incoming(), userId, sessionId);
+        allow update: if isOwner(userId) && isValidId(sessionId) && isValidChatSession(incoming(), userId, sessionId) &&
                          incoming().id == existing().id &&
                          incoming().userId == existing().userId &&
                          (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt) &&
@@ -136,8 +136,8 @@ service cloud.firestore {
         match /messages/{messageId} {
           allow get: if isOwner(userId) && isValidId(messageId);
           allow list: if isOwner(userId);
-          allow create: if isOwner(userId) && isValidId(messageId) && isValidChatMessage(incoming(), userId);
-          allow update: if isOwner(userId) && isValidId(messageId) && isValidChatMessage(incoming(), userId) &&
+          allow create: if isOwner(userId) && isValidId(messageId) && isValidChatMessage(incoming(), userId, sessionId, messageId);
+          allow update: if isOwner(userId) && isValidId(messageId) && isValidChatMessage(incoming(), userId, sessionId, messageId) &&
                            incoming().id == existing().id &&
                            incoming().userId == existing().userId &&
                            incoming().sessionId == existing().sessionId &&
@@ -179,12 +179,33 @@ service cloud.firestore {
       return isFolderDataConsistent(getAfter(folderDocPath(folderId)), bookId, ownerId, isShared);
     }
 
-    function isParentBookCurrentlyShared(bookId, expectedOwnerId) {
-      return isBookDataConsistent(get(bookDocPath(bookId)), expectedOwnerId, true);
+    function isParentBookCurrentlyShared(bookId) {
+      let bookDoc = get(bookDocPath(bookId));
+      return bookDoc != null && bookDoc.data.isShared == true;
     }
 
-    function isParentFolderCurrentlyShared(folderId, expectedBookId, expectedOwnerId) {
-      return isFolderDataConsistent(get(folderDocPath(folderId)), expectedBookId, expectedOwnerId, true);
+    function isParentFolderCurrentlyShared(folderId) {
+      let folderDoc = get(folderDocPath(folderId));
+      return folderDoc != null &&
+             folderDoc.data.isShared == true &&
+             isParentBookCurrentlyShared(folderDoc.data.bookId);
+    }
+
+    function canReadRagBook() {
+      return existing().ownerId == request.auth.uid ||
+             existing().isShared == true;
+    }
+
+    function canReadRagFolder() {
+      return existing().ownerId == request.auth.uid ||
+             (existing().isShared == true &&
+              isParentBookCurrentlyShared(existing().bookId));
+    }
+
+    function canReadRagChunk() {
+      return existing().ownerId == request.auth.uid ||
+             (existing().isShared == true &&
+              isParentFolderCurrentlyShared(existing().folderId));
     }
 
     function isValidRagBook(data, bookId) {
@@ -239,9 +260,8 @@ service cloud.firestore {
 
     match /rag_books/{bookId} {
       allow get: if isSignedIn() && isValidId(bookId) &&
-                    (resource == null || existing().ownerId == request.auth.uid || existing().isShared == true);
-      allow list: if isSignedIn() &&
-                     (existing().ownerId == request.auth.uid || existing().isShared == true);
+                    (resource == null || canReadRagBook());
+      allow list: if isSignedIn() && canReadRagBook();
       allow create: if isSignedIn() &&
                        isValidId(bookId) &&
                        incoming().ownerId == request.auth.uid &&
@@ -261,12 +281,8 @@ service cloud.firestore {
 
     match /rag_folders/{folderId} {
       allow get: if isSignedIn() && isValidId(folderId) &&
-                    (resource == null ||
-                     existing().ownerId == request.auth.uid ||
-                     (existing().isShared == true &&
-                      isParentBookCurrentlyShared(existing().bookId, existing().ownerId)));
-      allow list: if isSignedIn() &&
-                     (existing().ownerId == request.auth.uid || existing().isShared == true);
+                    (resource == null || canReadRagFolder());
+      allow list: if isSignedIn() && canReadRagFolder();
       allow create: if isSignedIn() &&
                        isValidId(folderId) &&
                        incoming().ownerId == request.auth.uid &&
@@ -289,13 +305,8 @@ service cloud.firestore {
 
     match /rag_chunks/{chunkId} {
       allow get: if isSignedIn() && isValidId(chunkId) &&
-                    (resource == null ||
-                     existing().ownerId == request.auth.uid ||
-                     (existing().isShared == true &&
-                      isParentBookCurrentlyShared(existing().bookId, existing().ownerId) &&
-                      isParentFolderCurrentlyShared(existing().folderId, existing().bookId, existing().ownerId)));
-      allow list: if isSignedIn() &&
-                     (existing().ownerId == request.auth.uid || existing().isShared == true);
+                    (resource == null || canReadRagChunk());
+      allow list: if isSignedIn() && canReadRagChunk();
       allow create: if isSignedIn() &&
                        isValidId(chunkId) &&
                        incoming().ownerId == request.auth.uid &&

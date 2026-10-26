@@ -13,10 +13,16 @@ import com.example.firebase.handleFirestoreError
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.snapshots
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
@@ -43,6 +49,7 @@ class FirestoreRagRepository(
         private const val MAX_FOLDER_BATCH_OPS = 15
         private const val MAX_CHUNK_BATCH_OPS = 9
         private const val MAX_DELETE_BATCH_OPS = 380
+        private const val MAX_BOOK_IN_QUERY_SIZE = 8
         private val SEED_LOCK = Any()
 
         private val ARABIC_STOPWORDS = setOf(
@@ -334,14 +341,73 @@ class FirestoreRagRepository(
             .map { snapshot -> snapshot.documents.map { CloudRagBook.fromSnapshot(it) } }
 
     /**
-     * Real-time stream of shared small folders (`/rag_folders` where `isShared == true`).
-     * Call ONLY when authenticated.
+     * Real-time stream of book-scoped shared small folders (`/rag_folders` where `isShared == true`
+     * AND parent `bookId` is in currently shared `/rag_books`).
+     * Aligned with `canReadRagFolder()` security rules (`<= 8` `get()` lookups per slice).
      */
+    @OptIn(ExperimentalCoroutinesApi::class)
     fun observeSharedFolders(): Flow<List<CloudRagFolder>> =
-        db.collection("rag_folders")
-            .whereEqualTo("isShared", true)
+        observeSharedBooks().flatMapLatest { sharedBooks ->
+            val sharedBookIds = sharedBooks
+                .filter { it.isShared }
+                .map { it.bookId }
+                .filter { it.isNotBlank() }
+                .distinct()
+            if (sharedBookIds.isEmpty()) {
+                flowOf(emptyList())
+            } else {
+                val sliceFlows = sharedBookIds.chunked(MAX_BOOK_IN_QUERY_SIZE).map { slice ->
+                    db.collection("rag_folders")
+                        .whereEqualTo("isShared", true)
+                        .whereIn("bookId", slice)
+                        .snapshots()
+                        .map { snapshot -> snapshot.documents.map { CloudRagFolder.fromSnapshot(it) } }
+                        .catch { err ->
+                            val fsEx = err as? FirebaseFirestoreException
+                                ?: (err.cause as? FirebaseFirestoreException)
+                            if (fsEx?.code == FirebaseFirestoreException.Code.PERMISSION_DENIED && authProvider() != null) {
+                                // Mid-revocation race before observeSharedBooks emits updated slice
+                                emit(emptyList())
+                            } else {
+                                throw err
+                            }
+                        }
+                }
+                combine(sliceFlows) { slices ->
+                    slices.flatMap { it }.distinctBy { it.folderId }
+                }
+            }
+        }
+
+    /**
+     * Real-time stream of all Cloud RAG books accessible to the current user (owned private + shared).
+     */
+    fun observeAccessibleBooks(): Flow<List<CloudRagBook>> {
+        val uid = authProvider()
+        if (uid.isNullOrBlank()) return observeSharedBooks()
+        val ownedFlow = db.collection("rag_books")
+            .whereEqualTo("ownerId", uid)
+            .snapshots()
+            .map { snapshot -> snapshot.documents.map { CloudRagBook.fromSnapshot(it) } }
+        return combine(observeSharedBooks(), ownedFlow) { shared, owned ->
+            (owned + shared).distinctBy { it.bookId }
+        }
+    }
+
+    /**
+     * Real-time stream of all Cloud RAG folders accessible to the current user (owned private + shared).
+     */
+    fun observeAccessibleFolders(): Flow<List<CloudRagFolder>> {
+        val uid = authProvider()
+        if (uid.isNullOrBlank()) return observeSharedFolders()
+        val ownedFlow = db.collection("rag_folders")
+            .whereEqualTo("ownerId", uid)
             .snapshots()
             .map { snapshot -> snapshot.documents.map { CloudRagFolder.fromSnapshot(it) } }
+        return combine(observeSharedFolders(), ownedFlow) { shared, owned ->
+            (owned + shared).distinctBy { it.folderId }
+        }
+    }
 
     suspend fun getSharedBooks(): Result<List<CloudRagBook>> {
         return try {
@@ -365,7 +431,7 @@ class FirestoreRagRepository(
             } else {
                 emptyList()
             }
-            Result.success((sharedList + ownedList).distinctBy { it.bookId })
+            Result.success((ownedList + sharedList).distinctBy { it.bookId })
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -376,17 +442,8 @@ class FirestoreRagRepository(
 
     suspend fun getSharedFolders(): Result<List<CloudRagFolder>> {
         return try {
-            val accessibleBookIds = getSharedBooks().getOrNull()?.map { it.bookId }?.toSet()
-            val sharedSnap = db.collection("rag_folders")
-                .whereEqualTo("isShared", true)
-                .get()
-                .await()
+            val accessibleBooks = getSharedBooks().getOrThrow()
             val uid = authProvider()
-            val sharedList = sharedSnap.documents
-                .map { CloudRagFolder.fromSnapshot(it) }
-                .filter { folder ->
-                    folder.ownerId == uid || accessibleBookIds == null || folder.bookId in accessibleBookIds
-                }
             val ownedList = if (!uid.isNullOrBlank()) {
                 try {
                     db.collection("rag_folders")
@@ -401,7 +458,44 @@ class FirestoreRagRepository(
             } else {
                 emptyList()
             }
-            Result.success((ownedList + sharedList).distinctBy { it.folderId })
+
+            val otherSharedBookIds = accessibleBooks
+                .filter { it.isShared && it.ownerId != uid }
+                .map { it.bookId }
+                .filter { it.isNotBlank() }
+                .distinct()
+
+            val sharedOtherList = mutableListOf<CloudRagFolder>()
+            for (slice in otherSharedBookIds.chunked(MAX_BOOK_IN_QUERY_SIZE)) {
+                try {
+                    val snap = db.collection("rag_folders")
+                        .whereEqualTo("isShared", true)
+                        .whereIn("bookId", slice)
+                        .get()
+                        .await()
+                    sharedOtherList.addAll(snap.documents.map { CloudRagFolder.fromSnapshot(it) })
+                } catch (e: FirebaseFirestoreException) {
+                    if (e.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) {
+                        // A book in this slice was concurrently revoked; query remaining books individually
+                        for (bid in slice) {
+                            try {
+                                val singleSnap = db.collection("rag_folders")
+                                    .whereEqualTo("isShared", true)
+                                    .whereEqualTo("bookId", bid)
+                                    .get()
+                                    .await()
+                                sharedOtherList.addAll(singleSnap.documents.map { CloudRagFolder.fromSnapshot(it) })
+                            } catch (inner: FirebaseFirestoreException) {
+                                if (inner.code != FirebaseFirestoreException.Code.PERMISSION_DENIED) throw inner
+                            }
+                        }
+                    } else {
+                        throw e
+                    }
+                }
+            }
+
+            Result.success((ownedList + sharedOtherList).distinctBy { it.folderId })
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -424,13 +518,52 @@ class FirestoreRagRepository(
 
     suspend fun getChunksForFolder(folderId: String): Result<List<CloudRagChunk>> {
         return try {
-            val sharedSnap = db.collection("rag_chunks")
-                .whereEqualTo("isShared", true)
-                .whereEqualTo("folderId", folderId)
-                .get()
-                .await()
             val uid = authProvider()
-            val rawSharedChunks = sharedSnap.documents.map { CloudRagChunk.fromSnapshot(it) }
+            if (uid.isNullOrBlank()) {
+                // Unauthenticated callers must hit Firestore rules directly and fail with PERMISSION_DENIED
+                val unauthSnap = db.collection("rag_chunks")
+                    .whereEqualTo("isShared", true)
+                    .whereEqualTo("folderId", folderId)
+                    .get()
+                    .await()
+                return Result.success(
+                    unauthSnap.documents.map { CloudRagChunk.fromSnapshot(it) }.sortedBy { it.chunkIndex }
+                )
+            }
+
+            // 1. Query owner's chunks first (0 rule get() lookups; succeeds for both shared and private owner folders)
+            val ownedChunks = try {
+                db.collection("rag_chunks")
+                    .whereEqualTo("ownerId", uid)
+                    .whereEqualTo("folderId", folderId)
+                    .get()
+                    .await()
+                    .documents
+                    .map { CloudRagChunk.fromSnapshot(it) }
+            } catch (_: Exception) {
+                emptyList()
+            }
+            if (ownedChunks.isNotEmpty()) {
+                return Result.success(ownedChunks.distinctBy { it.chunkId }.sortedBy { it.chunkIndex })
+            }
+
+            // 2. Otherwise query shared chunks for non-owned folder (rules enforce parent folder & parent book isShared == true)
+            val rawSharedChunks = try {
+                db.collection("rag_chunks")
+                    .whereEqualTo("isShared", true)
+                    .whereEqualTo("folderId", folderId)
+                    .get()
+                    .await()
+                    .documents
+                    .map { CloudRagChunk.fromSnapshot(it) }
+            } catch (e: FirebaseFirestoreException) {
+                if (e.code == FirebaseFirestoreException.Code.PERMISSION_DENIED) {
+                    emptyList()
+                } else {
+                    throw e
+                }
+            }
+
             val nonOwnerBookIds = rawSharedChunks
                 .filter { it.ownerId != uid }
                 .map { it.bookId }
@@ -446,25 +579,7 @@ class FirestoreRagRepository(
             val sharedChunks = rawSharedChunks.filter { chunk ->
                 chunk.ownerId == uid || chunk.bookId in verifiedSharedBookIds
             }
-            val ownedChunks = if (!uid.isNullOrBlank()) {
-                try {
-                    db.collection("rag_chunks")
-                        .whereEqualTo("ownerId", uid)
-                        .whereEqualTo("folderId", folderId)
-                        .get()
-                        .await()
-                        .documents
-                        .map { CloudRagChunk.fromSnapshot(it) }
-                } catch (_: Exception) {
-                    emptyList()
-                }
-            } else {
-                emptyList()
-            }
-            val sorted = (ownedChunks + sharedChunks)
-                .distinctBy { it.chunkId }
-                .sortedBy { it.chunkIndex }
-            Result.success(sorted)
+            Result.success(sharedChunks.distinctBy { it.chunkId }.sortedBy { it.chunkIndex })
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -707,9 +822,15 @@ class FirestoreRagRepository(
         val seedFolderIdxMap = cachedSeedFolderIndex.orEmpty()
         val seedChunksIdxByFolder = cachedSeedChunkIndexByFolder.orEmpty()
 
-        val isSignedIn = authProvider() != null
+        val uid = authProvider()
+        val isSignedIn = !uid.isNullOrBlank()
         val cloudFolders = if (cachedCloudFolders.isNotEmpty()) {
-            cachedCloudFolders
+            // If cachedCloudFolders only holds static seed entries (ownerId == ""), enrich from live Cloud on sign-in
+            if (isSignedIn && cachedCloudFolders.all { it.ownerId.isBlank() }) {
+                (getSharedFolders().getOrNull().orEmpty() + cachedCloudFolders).distinctBy { it.folderId }
+            } else {
+                cachedCloudFolders
+            }
         } else if (isSignedIn) {
             getSharedFolders().getOrNull().orEmpty()
         } else {

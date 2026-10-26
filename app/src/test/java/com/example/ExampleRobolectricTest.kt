@@ -222,6 +222,92 @@ class ExampleRobolectricTest {
       assertEquals("Invalid glTF magic in $assetPath", 0x46546C67, magic)
       assertEquals("Expected glTF version 2 in $assetPath", 2, version)
       assertEquals("Declared GLB byte length mismatch in $assetPath", bytes.size, declaredLength)
+
+      // Parse Chunk 0 (glTF 2.0 JSON chunk: type 0x4E4F534A = "JSON") to verify scene/nodes/meshes integrity
+      val chunk0Header = java.nio.ByteBuffer.wrap(bytes, 12, 8).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+      val jsonChunkLen = chunk0Header.int
+      val jsonChunkType = chunk0Header.int
+      assertEquals("Expected JSON chunk0 in $assetPath", 0x4E4F534A, jsonChunkType)
+      assertTrue("Invalid JSON chunk length in $assetPath", jsonChunkLen > 16 && 20 + jsonChunkLen <= bytes.size)
+      val gltfJson = JSONObject(String(bytes, 20, jsonChunkLen, Charsets.UTF_8).trim { it <= ' ' || it == '\u0000' })
+      assertEquals("2.0", gltfJson.getJSONObject("asset").getString("version"))
+      assertTrue("Expected non-empty nodes in $assetPath", gltfJson.getJSONArray("nodes").length() > 0)
+      assertTrue("Expected non-empty meshes in $assetPath", gltfJson.getJSONArray("meshes").length() > 0)
+    }
+  }
+
+  @Test
+  fun `multi-book RAG retrieval resolves distinct historical eras with page-level citations`() = kotlinx.coroutines.runBlocking {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val fakeDb = createLocalTestFirestore(context)
+    val repo = FirestoreRagRepository(
+      db = fakeDb,
+      appContext = context,
+      authProvider = { null }
+    )
+
+    val queries = listOf(
+      "ما هي بنود معاهدة السلام بعد معركة قادش في عهد رمسيس الثاني؟",
+      "كيف تأسست مدينة الإسكندرية ومكتبتها في العصر البطلمي؟",
+      "توحيد القطرين والملك مينا نعرمر وعصر الأسرات المبكر"
+    )
+    val matchedBookIds = mutableSetOf<String>()
+    for (q in queries) {
+      val hits = repo.retrieveRelevantPassages(q, topFoldersLimit = 4, topChunksLimit = 4)
+      assertTrue("Expected non-empty RAG hits for query: $q", hits.isNotEmpty())
+      val top = hits.first()
+      assertTrue("Expected non-blank chunk content", top.chunk.content.length > 40)
+      assertTrue("Expected bookId in citation URI", top.toCitationUri().contains(top.chunk.bookId))
+      assertTrue("Expected folderId in citation URI", top.toCitationUri().contains(top.chunk.folderId))
+      matchedBookIds.add(top.chunk.bookId)
+    }
+    assertTrue("Expected queries across eras to retrieve from multiple distinct books", matchedBookIds.size >= 2)
+  }
+
+  @Test
+  fun `guest auth state voice fallback and offline chat session flow work cleanly without API key leaks`() = kotlinx.coroutines.runBlocking {
+    val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+    // Ensure FirebaseApp is initialized in Robolectric JVM before constructing RamsesViewModel
+    createLocalTestFirestore(app)
+    com.google.firebase.auth.FirebaseAuth.getInstance().signOut()
+
+    val vm = com.example.ui.viewmodel.RamsesViewModel(app)
+    try {
+      // 1. Unauthenticated state defaults to GUEST without anonymous sign-in
+      val profile = vm.userProfile.value
+      assertFalse(profile.isSignedIn)
+      assertEquals(com.example.data.model.AuthProvider.GUEST, profile.provider)
+
+      // 2. Live WebSocket client safely falls back to local voice when no API key is configured and redacts secrets
+      val liveClient = GeminiLiveWebSocketClient(app)
+      val startedWithoutKey = liveClient.startSession(
+        customApiKey = "",
+        appLanguage = AppLanguage.ARABIC,
+        gemPersona = "RAMSES",
+        ragDocs = emptyList()
+      )
+      if (BuildConfig.GEMINI_API_KEY.isBlank() || BuildConfig.GEMINI_API_KEY == "MY_GEMINI_API_KEY") {
+        assertFalse(startedWithoutKey)
+        assertEquals(
+          GeminiLiveWebSocketClient.LiveConnectionStatus.FALLBACK_LOCAL,
+          liveClient.connectionStatus.value
+        )
+      }
+      liveClient.stopSession()
+
+      val leakedText = "Handshake error with token AIzaSySecretLiveToken987654"
+      val redacted = com.example.security.SecureKeyStoreHelper.redactSecret(leakedText, "AIzaSySecretLiveToken987654")
+      assertFalse(redacted.contains("AIzaSySecretLiveToken987654"))
+      assertTrue(redacted.contains("[REDACTED_KEY]"))
+
+      // 3. Language switching & TTS clean shutdown
+      vm.setLanguage(AppLanguage.ENGLISH)
+      assertEquals(AppLanguage.ENGLISH, vm.appLanguage.value)
+      vm.setLanguage(AppLanguage.ARABIC)
+      assertEquals(AppLanguage.ARABIC, vm.appLanguage.value)
+    } finally {
+      vm.ttsHelper.shutdown()
+      vm.geminiLiveClient.stopSession()
     }
   }
 

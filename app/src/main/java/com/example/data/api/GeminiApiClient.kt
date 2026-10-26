@@ -658,7 +658,8 @@ If you have not yet configured a personal Google AI Studio key, open the **Side 
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.w(TAG, "Firebase AI Logic stream attempt notice: ${e.message}")
+            val safeMsg = SecureKeyStoreHelper.redactSecret(e.message, getEffectiveApiKey(null))
+            Log.w(TAG, "Firebase AI Logic stream attempt notice: $safeMsg")
             null
         }
     }
@@ -733,7 +734,8 @@ If you have not yet configured a personal Google AI Studio key, open the **Side 
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            Log.w(TAG, "Firebase AI Logic unary generation attempt notice: ${e.message}")
+            val safeMsg = SecureKeyStoreHelper.redactSecret(e.message, getEffectiveApiKey(null))
+            Log.w(TAG, "Firebase AI Logic unary generation attempt notice: $safeMsg")
             null
         }
     }

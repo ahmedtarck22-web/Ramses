@@ -1,8 +1,8 @@
 package com.example.ui.components
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -12,7 +12,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
-import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -51,7 +51,6 @@ import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.ViewInAr
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -66,26 +65,18 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
-import com.example.R
 import com.example.data.model.AppLanguage
-import com.example.data.model.AppStrings
 import com.example.data.model.AvatarRigConfig
 import com.example.data.model.VoiceCallState
 import com.example.ui.theme.AmiriFontFamily
@@ -93,12 +84,8 @@ import com.example.ui.theme.CinzelFontFamily
 import com.example.ui.theme.EgyptianCyan
 import com.example.ui.theme.RoyalGold
 import com.example.ui.theme.RoyalGoldLight
-import com.example.ui.theme.TextPrimary
-import com.example.ui.theme.TextSecondary
 import kotlinx.coroutines.delay
 import java.util.Locale
-import kotlin.math.cos
-import kotlin.math.sin
 
 /**
  * Animated Gemini Audio Frequency Equalizer Bar
@@ -114,15 +101,15 @@ fun GeminiLiveEqualizerBars(
 
     Row(
         modifier = modifier,
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(5.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         for (i in 0 until barCount) {
             val animProgress by infiniteTransition.animateFloat(
-                initialValue = 0.2f,
+                initialValue = 0.28f,
                 targetValue = 1.0f,
                 animationSpec = infiniteRepeatable(
-                    animation = tween(durationMillis = 350 + i * 110, easing = FastOutSlowInEasing),
+                    animation = tween(durationMillis = 340 + i * 105, easing = FastOutSlowInEasing),
                     repeatMode = RepeatMode.Reverse
                 ),
                 label = "bar_$i"
@@ -130,15 +117,15 @@ fun GeminiLiveEqualizerBars(
 
             val normalizedRms = (rmsDb.coerceIn(0f, 15f) / 15f)
             val baseHeight = when (state) {
-                VoiceCallState.LISTENING -> (7f + normalizedRms * 28f * animProgress).dp
-                VoiceCallState.SPEAKING -> (9f + (maxOf(0.35f, normalizedRms) * 28f * animProgress)).dp
+                VoiceCallState.LISTENING -> (7f + normalizedRms * 26f * animProgress).dp
+                VoiceCallState.SPEAKING -> (10f + (maxOf(0.42f, normalizedRms) * 26f * animProgress)).dp
                 VoiceCallState.THINKING -> (6f + (10f * animProgress)).dp
                 VoiceCallState.IDLE -> 5.dp
             }
 
             Box(
                 modifier = Modifier
-                    .width(4.dp)
+                    .width(4.5.dp)
                     .height(baseHeight)
                     .clip(RoundedCornerShape(3.dp))
                     .background(
@@ -155,8 +142,113 @@ fun GeminiLiveEqualizerBars(
 }
 
 /**
- * Fullscreen Gemini Live Voice Screen
- * Matches Google Gemini Live's natural, continuous, low-latency hands-free experience.
+ * Classic Glowing Gemini Live Orb (restored for `selectedGem == "GEMINI_DEFAULT"`)
+ * matching the signature deep-navy glowing blue/cyan 3-star sparkle experience.
+ */
+@Composable
+private fun GeminiLiveSparkleOrb(
+    voiceCallState: VoiceCallState,
+    rmsDb: Float
+) {
+    val infiniteTransition = rememberInfiniteTransition(label = "gemini_live_orb")
+    val pulse by infiniteTransition.animateFloat(
+        initialValue = 0.96f,
+        targetValue = 1.06f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1600, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "orb_pulse"
+    )
+    val volumeScale = 1f + (rmsDb.coerceIn(0f, 15f) / 15f) * 0.10f
+
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+        modifier = Modifier.testTag("gemini_live_orb_container")
+    ) {
+        Box(
+            modifier = Modifier.size(236.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            // Outer concentric glow rings
+            Box(
+                modifier = Modifier
+                    .size(228.dp)
+                    .scale(pulse * volumeScale)
+                    .clip(CircleShape)
+                    .border(1.dp, Color(0xFF38BDF8).copy(alpha = 0.14f), CircleShape)
+            )
+            Box(
+                modifier = Modifier
+                    .size(208.dp)
+                    .scale(pulse * 0.99f * volumeScale)
+                    .clip(CircleShape)
+                    .border(1.2.dp, Color(0xFF38BDF8).copy(alpha = 0.22f), CircleShape)
+            )
+            Box(
+                modifier = Modifier
+                    .size(192.dp)
+                    .scale(pulse * 0.98f * volumeScale)
+                    .clip(CircleShape)
+                    .background(
+                        Brush.radialGradient(
+                            colors = listOf(
+                                Color(0xFF0EA5E9).copy(alpha = 0.22f),
+                                Color(0xFF1D4ED8).copy(alpha = 0.10f),
+                                Color.Transparent
+                            )
+                        )
+                    )
+                    .border(1.4.dp, Color(0xFF60A5FA).copy(alpha = 0.30f), CircleShape)
+            )
+
+            // Main Glowing Blue-to-Cyan Gemini Orb
+            Box(
+                modifier = Modifier
+                    .size(176.dp)
+                    .scale(if (voiceCallState == VoiceCallState.SPEAKING || voiceCallState == VoiceCallState.LISTENING) volumeScale else 1f)
+                    .clip(CircleShape)
+                    .background(
+                        Brush.linearGradient(
+                            colors = listOf(
+                                Color(0xFF2563EB),
+                                Color(0xFF0284C7),
+                                Color(0xFF22D3EE)
+                            )
+                        )
+                    )
+                    .border(2.5.dp, Color(0xFF7DD3FC).copy(alpha = 0.78f), CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.AutoAwesome,
+                    contentDescription = "Gemini Live",
+                    tint = Color.White,
+                    modifier = Modifier.size(74.dp)
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(18.dp))
+
+        Text(
+            text = "Gemini Live",
+            fontFamily = CinzelFontFamily,
+            fontWeight = FontWeight.Medium,
+            fontSize = 19.sp,
+            color = Color.White,
+            textAlign = TextAlign.Center
+        )
+    }
+}
+
+/**
+ * Fullscreen Gemini Live Voice Screen:
+ * - When `selectedGem == "GEMINI_DEFAULT"` (جيمناي): renders the classic deep-navy Gemini Live
+ *   glowing blue/cyan sparkle orb UI.
+ * - When `selectedGem != "GEMINI_DEFAULT"` (رمسيس): renders King Ramses II's interactive 3D .GLB
+ *   model (`Ramses.final.glb`) on a pure `#000000` black background.
  */
 @Composable
 fun GeminiLiveVoiceScreen(
@@ -166,6 +258,7 @@ fun GeminiLiveVoiceScreen(
     rmsDb: Float = 0f,
     appLanguage: AppLanguage = AppLanguage.ARABIC,
     rigConfig: AvatarRigConfig = AvatarRigConfig(),
+    selectedGem: String = "RAMSES",
     isNativeLiveConnected: Boolean = false,
     isConnectingLive: Boolean = false,
     isMicMuted: Boolean = false,
@@ -183,7 +276,6 @@ fun GeminiLiveVoiceScreen(
     var showKeyboardInput by remember { mutableStateOf(false) }
     var callSeconds by remember { mutableStateOf(0) }
 
-    // Live call duration timer
     LaunchedEffect(Unit) {
         while (true) {
             delay(1000)
@@ -192,52 +284,63 @@ fun GeminiLiveVoiceScreen(
     }
 
     val isArabic = appLanguage == AppLanguage.ARABIC
+    val isGeminiDefault = selectedGem == "GEMINI_DEFAULT"
 
-    Dialog(
-        onDismissRequest = onEndCall,
-        properties = DialogProperties(
-            usePlatformDefaultWidth = false,
-            dismissOnBackPress = true,
-            dismissOnClickOutside = false
+    BackHandler(onBack = onEndCall)
+
+    val rootBackgroundModifier = if (isGeminiDefault) {
+        Modifier.background(
+            Brush.verticalGradient(
+                colors = listOf(
+                    Color(0xFF040814),
+                    Color(0xFF07132C),
+                    Color(0xFF040711)
+                )
+            )
         )
+    } else {
+        Modifier.background(Color.Black)
+    }
+
+    val pillBgColor = if (isGeminiDefault) Color(0xFF131B2E) else Color(0xFF141414)
+    val responseCardBgColor = if (isGeminiDefault) Color(0xFF080F1E) else Color(0xFF0A0A0A)
+    val chipBgColor = if (isGeminiDefault) Color(0xFF0A1222) else Color(0xFF0E0E0E)
+
+    Surface(
+        modifier = Modifier
+            .fillMaxSize()
+            .testTag("gemini_live_overlay"),
+        color = if (isGeminiDefault) Color(0xFF040814) else Color.Black,
+        contentColor = Color.White
     ) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            Color(0xFF040816),
-                            Color(0xFF071126),
-                            Color(0xFF0B1B3D),
-                            Color(0xFF050B18)
-                        )
-                    )
-                )
-                .statusBarsPadding()
-                .navigationBarsPadding()
-                .imePadding()
+                .then(rootBackgroundModifier)
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
+                    .imePadding()
                     .padding(horizontal = 20.dp, vertical = 14.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.SpaceBetween
             ) {
-                // 1. Top Bar: Close Button, Gemini Live Status Badge & Language Toggle
+                // 1. Top Bar: Close Button, Timer/Status Pill & Language Toggle
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Minimalist Close Button
                     IconButton(
                         onClick = onEndCall,
                         modifier = Modifier
-                            .size(40.dp)
+                            .size(48.dp)
                             .clip(CircleShape)
-                            .background(Color(0x22FFFFFF))
+                            .background(pillBgColor)
+                            .border(0.8.dp, Color.White.copy(alpha = 0.16f), CircleShape)
                             .testTag("gemini_live_close_button")
                     ) {
                         Icon(
@@ -248,70 +351,67 @@ fun GeminiLiveVoiceScreen(
                         )
                     }
 
-                    // Real-Time Gemini Live WebSocket Status Pill
                     val mins = callSeconds / 60
                     val secs = callSeconds % 60
                     val timeLabel = String.format(Locale.US, "%02d:%02d", mins, secs)
                     Box(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(18.dp))
+                            .clip(RoundedCornerShape(20.dp))
                             .background(
-                                if (isNativeLiveConnected) Color(0x2610B981)
-                                else if (isConnectingLive) Color(0x26F59E0B)
-                                else Color(0x22FFFFFF)
+                                if (isNativeLiveConnected && !isGeminiDefault) Color(0xFF0A1F17)
+                                else if (isConnectingLive) Color(0xFF1F1606)
+                                else pillBgColor
                             )
                             .border(
                                 1.dp,
-                                if (isNativeLiveConnected) Color(0xFF10B981).copy(alpha = 0.6f)
+                                if (isNativeLiveConnected && !isGeminiDefault) Color(0xFF10B981).copy(alpha = 0.6f)
                                 else if (isConnectingLive) RoyalGold.copy(alpha = 0.6f)
-                                else Color.White.copy(alpha = 0.2f),
-                                RoundedCornerShape(18.dp)
+                                else Color.White.copy(alpha = 0.18f),
+                                RoundedCornerShape(20.dp)
                             )
-                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                            .padding(horizontal = 14.dp, vertical = 7.dp)
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Box(
                                 modifier = Modifier
-                                    .size(8.dp)
+                                    .size(9.dp)
                                     .clip(CircleShape)
                                     .background(
-                                        if (isNativeLiveConnected) Color(0xFF10B981)
-                                        else if (isConnectingLive) RoyalGold
+                                        if (isConnectingLive) RoyalGold
                                         else EgyptianCyan
                                     )
                             )
-                            Spacer(modifier = Modifier.width(6.dp))
+                            Spacer(modifier = Modifier.width(7.dp))
                             Text(
                                 text = when {
-                                    isConnectingLive -> if (isArabic) "جاري فتح البث الصوتي المباشر..." else "Connecting Live Stream..."
-                                    isNativeLiveConnected -> if (isArabic) "بث حي مباشر 24kHz • $timeLabel" else "Live Native Audio • $timeLabel"
+                                    isConnectingLive -> if (isArabic) "جاري الاتصال..." else "Connecting..."
+                                    isNativeLiveConnected && !isGeminiDefault -> if (isArabic) "بث حي • $timeLabel" else "Live • $timeLabel"
                                     else -> timeLabel
                                 },
                                 fontFamily = AmiriFontFamily,
                                 fontWeight = FontWeight.Bold,
-                                fontSize = 11.sp,
+                                fontSize = 12.sp,
                                 color = Color.White
                             )
                         }
                     }
 
-                    // Language Toggle
                     Box(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(Color(0x22FFFFFF))
-                            .border(1.dp, RoyalGold.copy(alpha = 0.5f), RoundedCornerShape(16.dp))
+                            .clip(RoundedCornerShape(18.dp))
+                            .background(pillBgColor)
+                            .border(1.dp, RoyalGold.copy(alpha = 0.55f), RoundedCornerShape(18.dp))
                             .clickable { onToggleLanguage() }
-                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                            .padding(horizontal = 13.dp, vertical = 7.dp)
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(
                                 imageVector = Icons.Default.Language,
                                 contentDescription = null,
                                 tint = RoyalGoldLight,
-                                modifier = Modifier.size(14.dp)
+                                modifier = Modifier.size(15.dp)
                             )
-                            Spacer(modifier = Modifier.width(4.dp))
+                            Spacer(modifier = Modifier.width(5.dp))
                             Text(
                                 text = if (isArabic) "🇪🇬 عربي" else "🇬🇧 EN",
                                 fontWeight = FontWeight.Bold,
@@ -322,48 +422,64 @@ fun GeminiLiveVoiceScreen(
                     }
                 }
 
-                // 2. Centerpiece: King Ramses 3D Model shifted down gracefully
+                // 2. Centerpiece: Classic Glowing Orb for Gemini, or Real 3D .GLB Ramses II Model on Pure Black for Ramses
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .weight(1.05f)
-                        .padding(top = 10.dp)
+                        .weight(1.12f)
+                        .padding(top = 6.dp)
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        RamsesAvatar3DView(
-                            modifier = Modifier.fillMaxSize(),
-                            isSpeaking = voiceCallState == VoiceCallState.SPEAKING,
-                            isListening = voiceCallState == VoiceCallState.LISTENING,
-                            isThinking = voiceCallState == VoiceCallState.THINKING,
-                            rmsDb = rmsDb,
-                            appLanguage = appLanguage,
-                            rigConfig = rigConfig,
-                            onStopSpeaking = onStopSpeaking,
-                            isAutoSpeakEnabled = true,
-                            showBackgroundGradient = false,
-                            verticalOffset = -0.10f
-                        )
+                    if (isGeminiDefault) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            GeminiLiveSparkleOrb(
+                                voiceCallState = voiceCallState,
+                                rmsDb = rmsDb
+                            )
+                        }
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f)
+                                .background(Color.Black)
+                                .testTag("gemini_live_3d_avatar_container"),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            RamsesAvatar3DView(
+                                modifier = Modifier.fillMaxSize(),
+                                isSpeaking = voiceCallState == VoiceCallState.SPEAKING,
+                                isListening = voiceCallState == VoiceCallState.LISTENING && !isMicMuted,
+                                isThinking = voiceCallState == VoiceCallState.THINKING || isConnectingLive,
+                                rmsDb = rmsDb,
+                                appLanguage = appLanguage,
+                                rigConfig = rigConfig,
+                                onStopSpeaking = onStopSpeaking,
+                                showBackgroundGradient = false,
+                                pureBlackBackground = true,
+                                sceneSlot = "live",
+                                verticalOffset = -0.08f
+                            )
+                        }
                     }
 
                     Spacer(modifier = Modifier.height(6.dp))
 
-                    // Audio Frequency Bars
                     GeminiLiveEqualizerBars(
                         state = voiceCallState,
                         rmsDb = rmsDb
                     )
                 }
 
-                Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(8.dp))
 
-                // 3. Dedicated AI & Conversation Response Section directly below the avatar
+                // 3. Dedicated AI & Conversation Response Section
                 val responseScrollState = rememberScrollState()
 
                 LaunchedEffect(lastRamsesSpeech.length) {
@@ -375,13 +491,17 @@ fun GeminiLiveVoiceScreen(
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(min = 88.dp, max = 165.dp)
+                        .heightIn(min = 88.dp, max = 160.dp)
                         .padding(horizontal = 4.dp),
-                    shape = RoundedCornerShape(20.dp),
-                    color = Color(0x660B172E),
-                    border = androidx.compose.foundation.BorderStroke(
+                    shape = RoundedCornerShape(22.dp),
+                    color = responseCardBgColor,
+                    border = BorderStroke(
                         1.dp,
-                        if (voiceCallState == VoiceCallState.SPEAKING) RoyalGold.copy(alpha = 0.6f) else Color(0x33FFFFFF)
+                        if (isGeminiDefault || voiceCallState == VoiceCallState.SPEAKING) {
+                            RoyalGold.copy(alpha = 0.55f)
+                        } else {
+                            Color.White.copy(alpha = 0.16f)
+                        }
                     )
                 ) {
                     Box(
@@ -393,20 +513,10 @@ fun GeminiLiveVoiceScreen(
                                 .fillMaxWidth()
                                 .verticalScroll(responseScrollState)
                                 .testTag("live_voice_response_scroll")
-                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                                .padding(horizontal = 16.dp, vertical = 14.dp),
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.spacedBy(5.dp)
                         ) {
-                            if (voiceCallState == VoiceCallState.SPEAKING) {
-                                Text(
-                                    text = stringResource(if (isArabic) R.string.live_echo_guard_ar else R.string.live_echo_guard_en),
-                                    fontFamily = if (isArabic) AmiriFontFamily else CinzelFontFamily,
-                                    fontSize = 11.sp,
-                                    color = Color(0xFF34D399),
-                                    textAlign = TextAlign.Center
-                                )
-                            }
-
                             if (lastTranscript.isNotBlank()) {
                                 Text(
                                     text = "« $lastTranscript »",
@@ -423,10 +533,10 @@ fun GeminiLiveVoiceScreen(
                                     Text(
                                         text = lastRamsesSpeech,
                                         fontFamily = if (isArabic) AmiriFontFamily else CinzelFontFamily,
-                                        fontSize = 14.sp,
+                                        fontSize = 15.sp,
                                         color = RoyalGoldLight,
                                         textAlign = TextAlign.Center,
-                                        lineHeight = 22.sp
+                                        lineHeight = 23.sp
                                     )
                                 }
                                 voiceCallState == VoiceCallState.THINKING -> {
@@ -443,7 +553,7 @@ fun GeminiLiveVoiceScreen(
                                             text = if (isConnectingLive) {
                                                 if (isArabic) "جاري الاتصال بصوت Gemini Live المباشر..." else "Connecting to real Gemini Live audio..."
                                             } else {
-                                                if (isArabic) "رمسيس يستجيب الآن..." else "Rameses is responding..."
+                                                if (isArabic) "جاري الاستجابة الآن..." else "Responding now..."
                                             },
                                             fontFamily = if (isArabic) AmiriFontFamily else CinzelFontFamily,
                                             fontSize = 13.sp,
@@ -453,10 +563,14 @@ fun GeminiLiveVoiceScreen(
                                 }
                                 voiceCallState == VoiceCallState.LISTENING -> {
                                     Text(
-                                        text = if (isArabic) "« تحدّث بحرية في أي وقت.. رمسيس يسمعك مباشرة دون تداخل صدى السماعة »" else "« Speak freely anytime.. Rameses hears you clearly with Acoustic Echo Guard »",
+                                        text = if (isGeminiDefault) {
+                                            if (isArabic) "أهلاً بك في Gemini Live! تفضّل بالتحدث، أنا أستمع إليك." else "Welcome to Gemini Live! Go ahead and speak, I'm listening."
+                                        } else {
+                                            if (isArabic) "« تحدّث بحرية الآن.. الصوت المباشر نشط »" else "« Speak freely now.. Live audio is active »"
+                                        },
                                         fontFamily = if (isArabic) AmiriFontFamily else CinzelFontFamily,
-                                        fontSize = 13.sp,
-                                        color = Color(0xFF00E5FF).copy(alpha = 0.88f),
+                                        fontSize = 14.sp,
+                                        color = if (isGeminiDefault) RoyalGoldLight else Color(0xFF00E5FF).copy(alpha = 0.88f),
                                         textAlign = TextAlign.Center
                                     )
                                 }
@@ -476,7 +590,7 @@ fun GeminiLiveVoiceScreen(
 
                 Spacer(modifier = Modifier.height(8.dp))
 
-                // 5. Expandable In-Call Text Input Bar (if user chooses keyboard)
+                // 4. Expandable In-Call Text Input Bar
                 AnimatedVisibility(
                     visible = showKeyboardInput,
                     enter = fadeIn() + slideInVertically { it / 2 },
@@ -486,7 +600,7 @@ fun GeminiLiveVoiceScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(22.dp))
-                            .background(Color(0x381E293B))
+                            .background(chipBgColor)
                             .border(1.dp, Color(0xFF00E5FF).copy(alpha = 0.3f), RoundedCornerShape(22.dp))
                             .padding(horizontal = 14.dp, vertical = 4.dp)
                     ) {
@@ -497,7 +611,9 @@ fun GeminiLiveVoiceScreen(
                             Box(modifier = Modifier.weight(1f)) {
                                 if (inCallTextInput.isEmpty()) {
                                     Text(
-                                        text = if (isArabic) "اكتب سؤالك لرمسيس هنا..." else "Type your question here...",
+                                        text = if (isArabic) {
+                                            if (isGeminiDefault) "اكتب سؤالك لـ Gemini هنا..." else "اكتب سؤالك لرمسيس هنا..."
+                                        } else "Type your question here...",
                                         fontFamily = AmiriFontFamily,
                                         fontSize = 13.sp,
                                         color = Color.White.copy(alpha = 0.45f)
@@ -550,18 +666,32 @@ fun GeminiLiveVoiceScreen(
                     }
                 }
 
-                // Quick voice prompt chips for instant interactive voice dialogue
-                val quickPrompts = if (isArabic) listOf(
-                    "👑 من أنت يا رمسيس؟",
-                    "🏛️ كيف بنيت معبد أبو سمبل؟",
-                    "⚔️ حدثني عن معركة قادش",
-                    "☀️ ما هي حكمتك اليوم؟"
-                ) else listOf(
-                    "👑 Who are you, Pharaoh?",
-                    "🏛️ Tell me about Abu Simbel",
-                    "⚔️ The Battle of Kadesh",
-                    "☀️ Your royal wisdom"
-                )
+                // 5. Quick voice prompt chips tailored to selected assistant
+                val quickPrompts = if (isGeminiDefault) {
+                    if (isArabic) listOf(
+                        "✨ أهلاً Gemini، كيف حالك؟",
+                        "💻 اشرح لي فكرة برمجية بسرعة",
+                        "☀️ الجو عامل إيه والوقت كام؟",
+                        "🎬 رشح لي فيلم كرتون رائع"
+                    ) else listOf(
+                        "✨ Hey Gemini, how are you?",
+                        "💻 Explain a coding concept quickly",
+                        "☀️ What's the weather and time?",
+                        "🎬 Recommend a great animated movie"
+                    )
+                } else {
+                    if (isArabic) listOf(
+                        "👑 من أنت يا رمسيس؟",
+                        "🏛️ كيف بنيت معبد أبو سمبل؟",
+                        "☀️ الجو عامل إيه النهارده؟",
+                        "⚔️ حدثني عن معركة قادش"
+                    ) else listOf(
+                        "👑 Who are you, Pharaoh?",
+                        "🏛️ Tell me about Abu Simbel",
+                        "☀️ How is the weather today?",
+                        "⚔️ The Battle of Kadesh"
+                    )
+                }
 
                 Row(
                     modifier = Modifier
@@ -574,11 +704,11 @@ fun GeminiLiveVoiceScreen(
                     for (prompt in quickPrompts) {
                         Box(
                             modifier = Modifier
-                                .clip(RoundedCornerShape(16.dp))
-                                .background(Color(0x331E293B))
-                                .border(1.dp, RoyalGold.copy(alpha = 0.4f), RoundedCornerShape(16.dp))
+                                .clip(RoundedCornerShape(18.dp))
+                                .background(chipBgColor)
+                                .border(1.dp, RoyalGold.copy(alpha = 0.42f), RoundedCornerShape(18.dp))
                                 .clickable { onQuickPromptClick(prompt) }
-                                .padding(horizontal = 12.dp, vertical = 6.dp)
+                                .padding(horizontal = 13.dp, vertical = 7.dp)
                         ) {
                             Text(
                                 text = prompt,
@@ -599,14 +729,13 @@ fun GeminiLiveVoiceScreen(
                     horizontalArrangement = Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Mute / Speaker Toggle
                     IconButton(
                         onClick = { onToggleSpeakerMute() },
                         modifier = Modifier
                             .size(52.dp)
                             .clip(CircleShape)
-                            .background(if (isSpeakerMuted) Color(0x33DC2626) else Color(0x22FFFFFF))
-                            .border(1.dp, if (isSpeakerMuted) Color(0xFFDC2626) else Color.White.copy(alpha = 0.15f), CircleShape)
+                            .background(if (isSpeakerMuted) Color(0x33DC2626) else pillBgColor)
+                            .border(1.dp, if (isSpeakerMuted) Color(0xFFDC2626) else Color.White.copy(alpha = 0.16f), CircleShape)
                     ) {
                         Icon(
                             imageVector = if (isSpeakerMuted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
@@ -616,14 +745,13 @@ fun GeminiLiveVoiceScreen(
                         )
                     }
 
-                    // Keyboard input toggle
                     IconButton(
                         onClick = { showKeyboardInput = !showKeyboardInput },
                         modifier = Modifier
                             .size(52.dp)
                             .clip(CircleShape)
-                            .background(if (showKeyboardInput) Color(0x3300E5FF) else Color(0x22FFFFFF))
-                            .border(1.dp, if (showKeyboardInput) Color(0xFF00E5FF) else Color.White.copy(alpha = 0.15f), CircleShape)
+                            .background(if (showKeyboardInput) Color(0xFF092226) else pillBgColor)
+                            .border(1.dp, if (showKeyboardInput) Color(0xFF00E5FF) else Color.White.copy(alpha = 0.16f), CircleShape)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Keyboard,
@@ -633,21 +761,19 @@ fun GeminiLiveVoiceScreen(
                         )
                     }
 
-                    // Primary Live Mic Action (Mute/Unmute in Full-Duplex Live, or Interrupt AI Speech)
                     Box(contentAlignment = Alignment.Center) {
                         if (voiceCallState == VoiceCallState.LISTENING && !isMicMuted) {
                             Box(
                                 modifier = Modifier
                                     .size(80.dp)
                                     .clip(CircleShape)
-                                    .background(Color(0xFF00E5FF).copy(alpha = 0.25f))
+                                    .background(Color(0xFF00E5FF).copy(alpha = 0.22f))
                             )
                         }
 
                         IconButton(
                             onClick = {
                                 if (voiceCallState == VoiceCallState.SPEAKING) {
-                                    // Instant barge-in interruption!
                                     onStopSpeaking()
                                 } else if (isNativeLiveConnected) {
                                     onToggleMicMute()
@@ -663,9 +789,9 @@ fun GeminiLiveVoiceScreen(
                                 .background(
                                     when {
                                         voiceCallState == VoiceCallState.SPEAKING -> RoyalGoldLight
-                                        isMicMuted -> Color(0xFF334155)
+                                        isMicMuted -> Color(0xFF1F1F1F)
                                         voiceCallState == VoiceCallState.LISTENING -> Color(0xFF00E5FF)
-                                        else -> Color(0xFF1E293B)
+                                        else -> pillBgColor
                                     }
                                 )
                                 .border(
@@ -688,7 +814,6 @@ fun GeminiLiveVoiceScreen(
                         }
                     }
 
-                    // End Call Button (Red Pill/Circle)
                     IconButton(
                         onClick = onEndCall,
                         modifier = Modifier

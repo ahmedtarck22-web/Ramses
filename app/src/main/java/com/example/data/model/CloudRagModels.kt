@@ -172,6 +172,20 @@ data class CloudRagChunk(
         "updatedAt" to FieldValue.serverTimestamp()
     )
 
+    fun formattedPageNumber(): String {
+        val raw = pageRange.trim()
+        if (raw.isNotEmpty() && raw.any { it.isDigit() }) {
+            val cleaned = raw
+                .replace(Regex("^(الصفحة|صفحات|صفحة|ص\\.?|pages?|pp?\\.?)\\s*:?\\s*", RegexOption.IGNORE_CASE), "")
+                .replace(Regex("\\s+"), " ")
+                .trim()
+            if (cleaned.isNotEmpty()) return cleaned
+        }
+        val startPage = (chunkIndex.coerceAtLeast(0) * 6) + 1
+        val endPage = startPage + 5
+        return "$startPage–$endPage"
+    }
+
     companion object {
         fun fromSnapshot(doc: DocumentSnapshot): CloudRagChunk {
             val kws = (doc.get("keywords") as? List<*>)?.mapNotNull { it?.toString() } ?: emptyList()
@@ -234,6 +248,6 @@ data class RetrievedRagPassage(
     val chunk: CloudRagChunk,
     val score: Double
 ) {
-    fun toCitationTitle(): String = "${chunk.bookTitle} • ${chunk.folderTitle} (${chunk.pageRange})"
-    fun toCitationUri(): String = "firestore://rag_books/${chunk.bookId}/folders/${chunk.folderId}#${chunk.chunkId}"
+    fun toCitationTitle(): String = "${chunk.bookTitle} • ${chunk.folderTitle} • الصفحة: ${chunk.formattedPageNumber()}"
+    fun toCitationUri(): String = "firestore://rag_books/${chunk.bookId}/folders/${chunk.folderId}#${chunk.chunkId}?page=${chunk.formattedPageNumber()}"
 }

@@ -41,6 +41,7 @@ class GeminiApiClient {
         // Primary Gemini 3.x models for instant TTFT and deep multi-paragraph reasoning
         val CANDIDATE_MODELS = listOf(
             "gemini-3.1-flash-lite",
+            "gemini-3.1-flash-lite-preview",
             "gemini-3.5-flash-lite",
             "gemini-3.8-flash",
             "gemini-3-flash-preview"
@@ -49,100 +50,210 @@ class GeminiApiClient {
         @Volatile
         var preferredModel: String = "gemini-3.1-flash-lite"
 
+        enum class QueryDomain {
+            HISTORICAL_RAMSES,
+            TECHNICAL_MODERN,
+            GENERAL_GEMINI
+        }
+
+        private val HISTORICAL_KEYWORDS = listOf(
+            "رمسيس", "فرعون", "فراعن", "مصر القديم", "المصريين القدماء", "قدماء المصريين",
+            "معبد", "معابد", "ابو سمبل", "أبو سمبل", "الكرنك", "الاقصر", "الأقصر", "طيبة",
+            "الرامسيوم", "قادش", "حيثي", "الحيثيين", "نفرتاري", "توت عنخ", "حتشبسوت", "تحتمس",
+            "اخناتون", "أخناتون", "سيتي", "خوفو", "خفرع", "منقرع", "هرم", "اهرام", "أهرام",
+            "ابو الهول", "أبو الهول", "مومياء", "تحنيط", "هيروغليف", "بردية", "برديات", "تابوت",
+            "مقبرة", "وادي الملوك", "وادي الملكات", "آثار", "اثار", "أثر", "اثري", "أثري",
+            "تاريخ مصر", "الاسرة", "الأسرة", "الدولة القديمة", "الدولة الوسطى", "الدولة الحديثة",
+            "النوبة", "بر رعمسيس", "بر-رعمسيس", "آمون", "امون", "حورس", "ايزيس", "إيزيس",
+            "اوزوريس", "أوزوريس", "أنوبيس", "انوبيس", "ماعت", "جعران", "مسلة", "مسلات",
+            "ramses", "rameses", "pharaoh", "ancient egypt", "egyptology", "abu simbel",
+            "karnak", "luxor", "kadesh", "nefertari", "tutankhamun", "pyramid", "sphinx",
+            "hieroglyph", "mummy", "papyrus", "dynasty", "antiquit", "archaeolog", "relic",
+            "horus", "anubis", "osiris", "amun", "hittite", "ramesseum"
+        )
+
+        private val TECHNICAL_KEYWORDS = listOf(
+            "كود", "اكواد", "أكواد", "برمج", "البرمجة", "مبرمج", "خوارزم", "بلندر", "بليندر",
+            "ثري دي", "ريج", "ماتريال", "شيدر", "رندر", "انيميشن", "أنيميشن", "موديل",
+            "سيرفر", "داتابيز", "قاعدة بيانات", "تكنولوجيا", "تقنية", "ذكاء اصطناعي",
+            "اندرويد", "أندرويد", "بايثون", "جافا", "كوتلن", "ريأكت", "فلاتر", "لينكس",
+            "ويندوز", "جيت", "اي بي اي", "سؤال تقني", "تطبيق", "برنامج",
+            "code", "coding", "program", "python", "kotlin", "java", "javascript", "typescript",
+            "react", "flutter", "android", "swift", "c++", "c#", "rust", "golang", "sql",
+            "html", "css", "api", "json", "xml", "gradle", "git", "github", "docker", "linux",
+            "blender", "maya", "cinema 4d", "unreal", "unity", "glb", "gltf", "fbx", "mesh",
+            "shader", "rigging", "armature", "keyframe", "render", "cycles", "eevee",
+            "geometry nodes", "modifier", "topology", "bug", "crash", "exception", "function",
+            "class ", "fun ", "def ", "import ", "compose", "firebase", "algorithm", "```"
+        )
+
+        private val RAMSES_IDENTITY_KEYWORDS = listOf(
+            "من انت", "مين انت", "عرف نفسك", "اسمك ايه", "ما اسمك", "يا رمسيس", "الملك رمسيس",
+            "who are you", "king rameses", "ask rameses"
+        )
+
+        fun isHistoricalOrEgyptologyQuery(prompt: String): Boolean {
+            val lower = prompt.lowercase()
+            return HISTORICAL_KEYWORDS.any { lower.contains(it) } ||
+                RAMSES_IDENTITY_KEYWORDS.any { lower.contains(it) }
+        }
+
+        fun isTechnicalOrSoftwareQuery(prompt: String): Boolean {
+            val lower = prompt.lowercase()
+            return TECHNICAL_KEYWORDS.any { lower.contains(it) }
+        }
+
+        fun classifyQueryDomain(
+            prompt: String,
+            selectedGem: String = "GEMINI_DEFAULT",
+            hasImage: Boolean = false
+        ): QueryDomain {
+            val isTech = isTechnicalOrSoftwareQuery(prompt)
+            val isHist = isHistoricalOrEgyptologyQuery(prompt)
+            return when {
+                isTech && !isHist -> QueryDomain.TECHNICAL_MODERN
+                isHist -> QueryDomain.HISTORICAL_RAMSES
+                hasImage -> QueryDomain.GENERAL_GEMINI
+                selectedGem == "CODE" -> QueryDomain.TECHNICAL_MODERN
+                else -> QueryDomain.GENERAL_GEMINI
+            }
+        }
+
+        fun sanitizeApiKey(raw: String?): String {
+            if (raw.isNullOrBlank()) return ""
+            return raw.filter { it.code in 0x21..0x7E }
+        }
+
+        fun stripHiddenControlTokens(raw: String): String {
+            if (raw.isEmpty()) return ""
+            return raw
+                .replace(Regex("(?is)<thought>.*?</thought>"), "")
+                .replace(Regex("(?is)<thinking>.*?</thinking>"), "")
+                .replace(Regex("<\\|[^|>]*\\|>"), "")
+                .replace(Regex("(?i)\\[(audio_token|audio|thought|thinking|hidden_token)\\]"), "")
+        }
+
+        fun stripInlineSourceMentions(raw: String): String {
+            if (raw.isEmpty()) return ""
+            return raw
+                .replace(Regex("\\(\\s*(?:المصدر|المرجع|المصادر|Source|Reference)\\s*:[^)\\n]{2,160}\\)"), "")
+                .replace(Regex("\\[\\s*(?:المصدر|المرجع|المصادر|Source|Reference)\\s*:[^\\]\\n]{2,160}\\]"), "")
+                .replace(Regex("\\(\\s*(?:الصفحة|صفحة|ص\\.?|Page|p\\.)\\s*:?\\s*[0-9٠-٩]+[^)\\n]{0,32}\\)", RegexOption.IGNORE_CASE), "")
+                .replace(Regex("(?:،|\\s)+من\\s+صفحة\\s+[0-9٠-٩]+(?:\\s*[-–إلى]+\\s*[0-9٠-٩]+)?"), "")
+                .replace(Regex("[ \\t]{2,}"), " ")
+        }
+
         const val GEMINI_SYSTEM_INSTRUCTION_AR = """
-أنت Google Gemini (جيميني)، المساعد الذكي الموسوعي فائق التطور والعمق.
-أنت ودود، ذكي، واسع الاطلاع، وبارع في تقديم إجابات شاملة، غنية بالتفاصيل، ومنظمة بإتقان في كافة المجالات (التاريخ المصري والحضارات، العلوم، البرمجة، الأفكار الإبداعية، تحليل الكتب والوثائق، والحياة اليومية).
-عندما يسألك المستخدم أسئلة ودية أو يومية أو معرفية، أجب بأسلوب طبيعي دافئ وعميق يثري القارئ بمعلومات وافية وأفكار متكاملة.
+أنت Google Gemini (جيميني)، المساعد الذكي الشامل، الودود، والاحترافي.
+قواعد أساسية ملزمة:
+1. أجب بذكاء، سلاسة، ومودة على جميع الأسئلة الطبيعية واليومية والعلمية والترفيهية: التحيات («إزيك»، «عامل إيه»)، الوقت والتاريخ واليوم، حالة الجو والطقس، التكنولوجيا والبرمجة، أفلام الكرتون والأنيميشن والسينما، الثقافة العامة، والعلوم، ولا تقل أبداً إنك لا تعرف الإجابة على الأسئلة اليومية أو المعرفية.
+2. يُمنع منعاً باتاً تقمّص شخصية الملك رمسيس أو الفراعنة أو خلط الإجابات البرمجية أو التقنية أو أسئلة برنامج Blender أو التكنولوجيا أو أفلام الكرتون أو الصور العامة بالتاريخ المصري القديم أو الآثار أو العبارات الملكية.
+3. إذا سألك المستخدم عن كود أو برمجة، اكتب الكود الصحيح النظيف واشرحه تقنياً مباشرة. وإذا سألك عن Blender أو التصميم ثلاثي الأبعاد، اشرح خطوات وأدوات واختصارات Blender الحقيقية بدقة واحترافية.
+4. عند تحليل صورة مرفقة، صف وحلّل ما يظهر فعلياً في الصورة بدقة وموضوعية تامة دون افتراض أنها صورة فرعونية إلا إذا كانت كذلك بالفعل.
 """
 
         const val GEMINI_SYSTEM_INSTRUCTION_EN = """
-You are Google Gemini, an advanced, encyclopedic, and deeply insightful AI assistant.
-You assist warmly and thoroughly with historical research, Egyptology, daily questions, creative brainstorming, software engineering, writing, and general knowledge.
-Deliver thoughtful, comprehensive, well-structured, and deeply informative responses tailored to enrich the reader.
+You are Google Gemini, an intelligent, warm, versatile, and accurate AI assistant.
+STRICT MANDATORY RULES:
+1. Answer all everyday, conversational, technical, cultural, and entertainment questions naturally and capably—including greetings ("how are you"), current time/date/day, weather, coding/technology, animated/cartoon movies, cinema, science, and daily life. Never claim you cannot answer normal everyday questions.
+2. NEVER roleplay as King Rameses or mix ancient Egyptian history, pharaohs, or archaeological metaphors into coding, programming, Blender, 3D software, technology, cartoons, or general non-historical answers.
+3. For coding questions, provide clean, runnable code and clear technical explanations. For Blender questions, provide exact Blender workflows, modifiers, nodes, and shortcuts.
+4. When analyzing an uploaded image, inspect and describe what is actually visible objectively and accurately.
 """
 
         const val RAMSES_SYSTEM_INSTRUCTION_AR = """
-أنت الملك رمسيس الثاني (Ask Rameses / اسأل رمسيس)، الفرعون العظيم، ابن رع، بطل معركة قادش وباني المعابد الخالدة في أبو سمبل وطيبة والرامسيوم وعاصمة بر-رعمسيس.
+أنت الملك رمسيس الثاني (Ask Rameses / اسأل رمسيس)، الفرعون العظيم، ابن رع، بطل معركة قادش وباني المعابد الخالدة في أبو سمبل وطيبة والرامسيوم وعاصمة بر-رعمسيس، وباحث ذكي واسع الاطلاع في علوم العصر الحديث أيضاً.
 
-الصفات والشخصية الملكية:
-1. الهوية: ملك حكيم، مهيب، دافئ، كريم الأخلاق، موسوعي المعرفة في التاريخ الفرعوني والآثار والعلوم والحضارات، ومطلع بعمق على علوم العصر الحديث والبرمجة وحكمة القيادة والحياة اليومية.
-2. اللغة والأسلوب: تتحدث باللغة العربية الفصحى الراقية المبسطة بنبرة فرعونية فخمة وودودة. وإذا تحدث المستخدم بالعامية المصرية اللطيفة، بادله الود بحفاوة وحكمة ملكية دافئة وأسلوب ممتع ومفصّل. وإذا تحدث بالإنجليزية، أجب بإنجليزية ملكية بليغة.
-3. الشرح والتفصيل: استجب بكياسة وهيبة، وقدّم شرحاً موسوعياً غنياً بالسرد التاريخي، الحقائق الدقيقة، التحليل العميق، والأمثلة الحية.
-4. الأسئلة العامة واليومية: أجب بود وإسهاب نافع على كافة الأسئلة والاستفسارات اليومية والعلمية والعملية مع إضفاء لمسة من الحكمة الملكية الملهمة.
-5. التحليل البصري المتعدد الوسائط: عند تزويدك بصور آثار، وثائق، أو نقوش، قدم تحليلاً بصرياً وتاريخياً وهندسياً مفصلاً ومقسماً إلى محاور واضحة.
-6. البحث والتوثيق الحي والكتب السحابية: ادمج المعرفة الموثقة من الكتب السحابية (RAG) وأداة البحث المباشر (Google Search Grounding) بسلاسة وتوسع مع إبراز التفاصيل والشواهد.
+الصفات والقواعد الملزمة:
+1. الهوية والمرونة الذكية: في الموضوعات التاريخية والأثرية والتحيات الودية، تحدث بوقار وحفاوة. وفي الأسئلة اليومية والطبيعية (مثل: إزيك، عامل إيه، التاريخ، اليوم، الوقت، حالة الجو، أفلام الكرتون والأنيميشن، الثقافة العامة، أو أي موضوع عام)، أجب بذكاء ولطف ودقة كاملة مستفيداً من بيانات الوقت والطقس المرفقة ومعرفتك الموسوعية الشاملة دون أن تتوقف أو تقول إنك لا تعرف.
+2. عدم الخلط بالتكنولوجيا: إذا تضمن السؤال طلباً برمجياً أو كوداً أو سؤالاً في برنامج Blender أو التكنولوجيا الحديثة، أجب كمساعد تقني مباشر بدون خلط التاريخ والآثار بالكود أو البرامج.
+3. منع ذكر أرقام الصفحات داخل المتن: اسرد المعلومات التاريخية بترابط وسلاسة، ويُمنع تماماً كتابة عبارات مثل «من صفحة كذا» أو «(المصدر: ...، الصفحة: ...)» وسط الفقرات؛ لأن قائمة المصادر المختصرة (اسم المصدر ورقم الصفحة) تُعرض تلقائياً في نهاية الرسالة فقط.
+4. التحليل البصري الدقيق: عند تحليل صورة مرفقة، حلّل محتواها الحقيقي الفعلي بدقة علمية وبصرية.
 """
 
         const val RAMSES_SYSTEM_INSTRUCTION_EN = """
-You are King Rameses II (Ask Rameses), the Great Pharaoh of Egypt, son of Ra, hero of Kadesh, and builder of the eternal temples of Abu Simbel, Luxor, the Ramesseum, and Pi-Ramesses.
+You are King Rameses II (Ask Rameses), the Great Pharaoh of Egypt, son of Ra, hero of Kadesh, and builder of Abu Simbel, Luxor, the Ramesseum, and Pi-Ramesses—endowed with comprehensive knowledge of the modern world as well.
 
-Persona & Royal Demeanor:
-1. Identity: A wise, majestic, dignified, warm, and encyclopedic monarch with profound mastery over ancient Egyptian history, archaeology, world sciences, philosophy, modern technology, and timeless leadership wisdom.
-2. Language: Speak in eloquent, dignified, accessible royal English with warm nobility. If addressed in Arabic, respond in refined royal Arabic.
-3. Depth & Richness: Elaborate thoroughly with vivid historical context, precise facts, analytical depth, and practical wisdom.
-4. Daily Life & Knowledge: Graciously and thoroughly assist with all inquiries—from ancient history, science, and coding to personal inspiration and strategic counsel.
-5. Multimodal Vision: Analyze artifacts, architecture, photos, and manuscripts with comprehensive archaeological and scientific precision.
-6. Live Search & Cloud RAG Books: Seamlessly weave verified facts and book passages into an expansive, authoritative narrative.
+Persona & Mandatory Rules:
+1. Speak with regal authority on ancient Egypt, history, and antiquities, while warmly, naturally, and accurately answering all everyday questions (how you are, today's date/day/time, weather, animated/cartoon movies, pop culture, science, and daily life) using the provided live clock/weather context and broad knowledge.
+2. Never mix Pharaonic roleplay or ancient history into coding, software engineering, Blender, or modern technology questions—answer technical questions directly and purely technically.
+3. No Inline Page Citations in Prose: Present historical narratives smoothly and NEVER write inline phrases like "from page X" or "(Source: ..., Page: ...)" inside paragraphs; the compact sources list (book name + page number) is displayed automatically at the very end of the message.
+4. Accurate Vision Analysis: Analyze uploaded images objectively based on what is visibly present.
 """
 
-        const val LONG_TEXT_DIRECTIVE_AR = """
+        const val LONG_TEXT_DIRECTIVE_HISTORICAL_AR = """
 [توجيه أساسي وملزم للردود النصية المكتوبة]:
-بما أن المستخدم أرسل رسالة نصية مكتوبة (وليس مكالمة صوتية)، يجب عليك دائماً تقديم إجابة طويلة، مفصّلة، شاملة، ومشبعة بالمعلومات (لا تقل عن 4 إلى 7 فقرات وافية ومترابطة، وتكون أطول وأكثر تفصيلاً في الموضوعات التاريخية أو العلمية أو العملية).
-- تجنّب تماماً الردود القصيرة أو المقتضبة ذات السطر أو السطرين؛ حتى في التحيات أو الأسئلة اليومية البسيطة، رحّب بالمستخدم بحفاوة ملكية دافئة، واستطرد بلمحات تاريخية شيقة، نصائح ملهمة، ومحاور تفتح آفاق الحوار.
-- نظّم إجابتك بشكل أنيق ومريح للقراءة باستخدام عناوين فرعية واضحة، فقرات متكاملة، ونقاط تفصيلية مشروحة بعمق، مع ذكر السياق التاريخي أو العلمي، التفاصيل الدقيقة، والخلاصة الحكيمة.
-- عند وجود فقرات مسترجعة من الكتب والمجلدات السحابية (RAG)، استثمر كل ما فيها من معلومات وتواريخ وشواهد واشرحها بإسهاب وتفصيل وافٍ.
+قدّم إجابة مفصّلة، شاملة، ومنظمة في فقرات واضحة وعناوين فرعية موضوعية، مع ذكر التواريخ والشواهد الدقيقة بسلاسة، ويُمنع كتابة «من صفحة كذا» أو ذكر المراجع وأرقام الصفحات داخل فقرات النص (لأن قائمة المراجع تُعرض مستقلة في آخر الرسالة فقط).
 """
 
-        const val LONG_TEXT_DIRECTIVE_EN = """
-[MANDATORY LONG-FORM WRITTEN TEXT DIRECTIVE]:
-Because the user typed a written text message (not a live voice call), you MUST ALWAYS provide a long, comprehensive, deeply detailed, multi-paragraph response (at least 4 to 7 substantial, well-developed paragraphs, and even longer for historical, scientific, or analytical topics).
-- NEVER reply with a brief 1–2 sentence answer. Even for greetings or casual daily questions, respond with warm royal hospitality, rich perspective, fascinating historical or practical insights, and thoughtful follow-up ideas.
-- Structure your response clearly using descriptive subheadings, rich cohesive paragraphs, detailed bulleted breakdowns where helpful, concrete examples, historical/scientific context, and a memorable concluding takeaway.
-- When Knowledge Base / RAG book passages are supplied, thoroughly unpack, explain, and elaborate on their facts, citations, and deeper significance.
+        const val LONG_TEXT_DIRECTIVE_HISTORICAL_EN = """
+[Historical Written Response Directive]:
+Provide a comprehensive, well-structured multi-paragraph explanation with clear thematic subheadings and accurate historical evidence. Do NOT write "from page X" or inline source/page citations inside paragraphs, as the compact sources list appears exclusively at the end of the message.
+"""
+
+        const val LONG_TEXT_DIRECTIVE_MODERN_AR = """
+[توجيه الردود التقنية والعامة المكتوبة]:
+قدّم إجابة واضحة، دقيقة، ومنظمة مباشرة في صلب الموضوع المطلوب (كود، Blender، تكنولوجيا، تحليل صورة، أو معرفة عامة) بدون أي مقدمات ملكية أو فرعونية أو إشارات تاريخية غير مطلوبة.
+"""
+
+        const val LONG_TEXT_DIRECTIVE_MODERN_EN = """
+[Technical & General Written Response Directive]:
+Provide a clear, accurate, well-structured response focused strictly on the requested topic (code, Blender, technology, image analysis, or general knowledge) with zero Pharaonic introductions or unrelated historical references.
 """
 
         fun buildEffectiveSystemInstruction(
             gemPersona: String,
             appLanguage: AppLanguage,
             isVoiceCall: Boolean,
-            ragContext: List<RagDocument> = emptyList()
+            ragContext: List<RagDocument> = emptyList(),
+            prompt: String = "",
+            hasImage: Boolean = false
         ): String {
-            var systemPrompt = when (gemPersona) {
-                "RAMSES" -> if (appLanguage == AppLanguage.ARABIC) RAMSES_SYSTEM_INSTRUCTION_AR else RAMSES_SYSTEM_INSTRUCTION_EN
-                "CODE" -> if (appLanguage == AppLanguage.ARABIC) {
-                    "أنت خبير البرمجة وهندسة البرمجيات في Google Gemini. تقدم حلولاً برمجية شاملة، مشروحة بالتفصيل خطوة بخطوة، مع الكود الكامل وأفضل الممارسات المعمارية."
+            val domain = classifyQueryDomain(prompt = prompt, selectedGem = gemPersona, hasImage = hasImage)
+            val useRamsesPersona = (domain == QueryDomain.HISTORICAL_RAMSES && gemPersona != "CODE")
+
+            var systemPrompt = when {
+                domain == QueryDomain.TECHNICAL_MODERN || gemPersona == "CODE" -> if (appLanguage == AppLanguage.ARABIC) {
+                    """أنت Google Gemini، مهندس برمجيات وخبير تقني متخصص في البرمجة، كتابة الأكواد، برنامج Blender، التصميم ثلاثي الأبعاد، والتكنولوجيا الحديثة.
+قدّم الإجابة التقنية أو الكود البرمجي أو شرح خطوات Blender مباشرة وباحترافية عالية، ويُمنع منعاً باتاً تقمّص شخصية الملك رمسيس أو الفراعنة أو خلط التاريخ والآثار بالتكنولوجيا."""
                 } else {
-                    "You are Google Gemini's senior software engineering assistant. Provide comprehensive, thoroughly explained, production-ready code and architectural guidance."
+                    """You are Google Gemini's senior software engineering, Blender 3D, and modern technology expert.
+Provide direct, accurate code, Blender steps, or technical explanations with zero Pharaonic or historical references."""
                 }
-                "WRITER" -> if (appLanguage == AppLanguage.ARABIC) {
-                    "أنت الكاتب الإبداعي والأديب الموسوعي في Google Gemini. تصيغ النصوص والمقالات والرسائل بإسهاب بليغ وأسلوب أدبي غني ومتكامل الفقرات."
+                useRamsesPersona -> if (appLanguage == AppLanguage.ARABIC) RAMSES_SYSTEM_INSTRUCTION_AR else RAMSES_SYSTEM_INSTRUCTION_EN
+                gemPersona == "WRITER" -> if (appLanguage == AppLanguage.ARABIC) {
+                    "أنت الكاتب الإبداعي والأديب في Google Gemini. صُغ النصوص والمقالات بأسلوب بليغ ومنظم حسب موضوع المستخدم مباشرة دون إقحام شخصيات تاريخية غير مطلوبة."
                 } else {
-                    "You are Google Gemini's master creative writer. Craft rich, expansive, eloquent multi-paragraph prose and ideas."
+                    "You are Google Gemini's creative writer. Craft clear, eloquent prose tailored strictly to the user's requested subject."
                 }
                 else -> if (appLanguage == AppLanguage.ARABIC) GEMINI_SYSTEM_INSTRUCTION_AR else GEMINI_SYSTEM_INSTRUCTION_EN
             }
 
             systemPrompt += if (isVoiceCall) {
                 if (appLanguage == AppLanguage.ARABIC) {
-                    "\n\n[توجيه المكالمة الصوتية الحية: أجب بصوت طبيعي ومترابط في جملتين إلى أربع جمل واضحة ومباشرة بدون رموز ماركداون أو نجوم لتناسب النطق الصوتي السلس.]"
+                    "\n\n[توجيه المكالمة الصوتية الحية: أجب بصوت طبيعي ومترابط في جملتين إلى أربع جمل واضحة ومباشرة بدون رموز ماركداون لتناسب النطق الصوتي السلس.]"
                 } else {
-                    "\n\n[Live Voice Call Directive: Answer naturally and smoothly in 2 to 4 clear spoken sentences without markdown symbols for fluid real-time speech.]"
+                    "\n\n[Live Voice Call Directive: Answer naturally and smoothly in 2 to 4 clear spoken sentences without markdown symbols.]"
                 }
+            } else if (useRamsesPersona) {
+                "\n\n" + if (appLanguage == AppLanguage.ARABIC) LONG_TEXT_DIRECTIVE_HISTORICAL_AR else LONG_TEXT_DIRECTIVE_HISTORICAL_EN
             } else {
-                "\n\n" + if (appLanguage == AppLanguage.ARABIC) LONG_TEXT_DIRECTIVE_AR else LONG_TEXT_DIRECTIVE_EN
+                "\n\n" + if (appLanguage == AppLanguage.ARABIC) LONG_TEXT_DIRECTIVE_MODERN_AR else LONG_TEXT_DIRECTIVE_MODERN_EN
             }
 
             val plainTextDocs = ragContext.filter { it.isEnabled && !it.isCloudPdfBook }
             if (plainTextDocs.isNotEmpty()) {
-                val ragBuilder = StringBuilder("\n\n[Knowledge Base / RAG Context]:\n")
+                val ragBuilder = StringBuilder("\n\n[المراجع والفقرات الموثقة بأرقام الصفحات / Cited RAG Passages]:\n")
                 for (doc in plainTextDocs) {
-                    ragBuilder.append("• ${doc.title} (${doc.category}):\n${doc.content}\n\n")
+                    ragBuilder.append("• المرجع: ${doc.title} (${doc.category}):\n${doc.content}\n\n")
                 }
                 ragBuilder.append(
                     if (isVoiceCall) {
-                        "Incorporate these authoritative facts concisely."
+                        "استعن بهذه الحقائق التاريخية الموثقة باختصار وسلاسة دون ذكر أرقام الصفحات شفهياً داخل الحديث."
+                    } else if (appLanguage == AppLanguage.ARABIC) {
+                        "استند بدقة إلى هذه الحقائق الموثقة في صياغة الشرح، ولا تكتب أسماء المصادر أو أرقام الصفحات داخل فقرات النص لأن قائمة المصادر (اسم المصدر ورقم الصفحة) تُعرض مستقلة في نهاية الرسالة."
                     } else {
-                        "Synthesize and elaborate thoroughly on these authoritative book passages, explaining their context, details, and significance in depth."
+                        "Ground your explanation accurately in these passages without writing source titles or page numbers inline inside paragraphs; the compact sources list appears separately at the end."
                     }
                 )
                 systemPrompt += ragBuilder.toString()
@@ -151,8 +262,10 @@ Because the user typed a written text message (not a live voice call), you MUST 
             val activePdfBooks = ragContext.filter { it.isEnabled && it.isCloudPdfBook }
             if (activePdfBooks.isNotEmpty()) {
                 val titles = activePdfBooks.joinToString(", ") { it.title }
-                systemPrompt += "\n\n[Indexed PDF Knowledge Base]: Ground factual claims thoroughly in the linked PDF books ($titles) via File Search when relevant and cite accurate details."
+                systemPrompt += "\n\n[Indexed PDF Knowledge Base]: Ground factual claims in the linked PDF books ($titles) when relevant without inserting inline page citations inside prose."
             }
+
+            systemPrompt += "\n\n" + EverydayKnowledgeHelper.buildCurrentDateTimeContext(appLanguage)
 
             return systemPrompt
         }
@@ -162,6 +275,7 @@ Because the user typed a written text message (not a live voice call), you MUST 
                 "gemini-3.8-flash",
                 "gemini-3.5-flash-lite",
                 "gemini-3.1-flash-lite",
+                "gemini-3.1-flash-lite-preview",
                 "gemini-3-flash-preview" -> model
                 else -> if (model.startsWith("gemini-3") || model.startsWith("gemini-4")) model else "gemini-3.1-flash-lite"
             }
@@ -184,11 +298,10 @@ Because the user typed a written text message (not a live voice call), you MUST 
     )
 
     private fun getEffectiveApiKey(customApiKey: String?): String {
-        return when {
-            !customApiKey.isNullOrBlank() -> customApiKey.trim()
-            BuildConfig.GEMINI_API_KEY.isNotBlank() && BuildConfig.GEMINI_API_KEY != "MY_GEMINI_API_KEY" -> BuildConfig.GEMINI_API_KEY.trim()
-            else -> ""
-        }
+        val cleanedCustom = sanitizeApiKey(customApiKey)
+        if (cleanedCustom.isNotBlank()) return cleanedCustom
+        val cleanedBuild = sanitizeApiKey(BuildConfig.GEMINI_API_KEY)
+        return if (cleanedBuild.isNotBlank() && cleanedBuild != "MY_GEMINI_API_KEY") cleanedBuild else ""
     }
 
     private suspend fun generateOfflineKnowledgeResponse(
@@ -196,9 +309,10 @@ Because the user typed a written text message (not a live voice call), you MUST 
         appLanguage: AppLanguage,
         isVoiceCall: Boolean,
         ragContext: List<RagDocument> = emptyList(),
+        gemPersona: String = "GEMINI_DEFAULT",
         onChunk: suspend (String) -> Unit
     ): GeminiResult {
-        val lower = prompt.lowercase().trim()
+        val norm = EverydayKnowledgeHelper.normalizeArabic(prompt)
         val isArabic = appLanguage == AppLanguage.ARABIC
         val matchedCloudChunks = ragContext.filter {
             it.isEnabled && !it.isCloudPdfBook && it.id.startsWith("cloud_chunk_")
@@ -208,63 +322,54 @@ Because the user typed a written text message (not a live voice call), you MUST 
             matchedCloudChunks.isNotEmpty() -> {
                 if (isVoiceCall) {
                     val top = matchedCloudChunks.first()
-                    "${top.content.take(260)} (${top.title})."
+                    stripInlineSourceMentions(top.content.take(260).trim())
                 } else {
+                    val topChunks = matchedCloudChunks.take(4)
                     buildString {
                         if (isArabic) {
-                            append("👑 **إجابة مفصّلة من خزائن الحكمة والكتب الموثقة في «اسأل رمسيس»**\n\n")
-                            append("لقد طالعت سؤالك بعناية في سجلاتنا الملكية والمجلدات التاريخية المفهرسة، وفيما يلي الشرح الوافي والمفصّل مرتباً بحسب المصادر والوثائق المعتمدة:\n\n")
-                            matchedCloudChunks.take(6).forEachIndexed { idx, doc ->
-                                append("### ${idx + 1}. ${doc.title}\n")
-                                append("${doc.content.take(1400).trim()}\n\n")
+                            append("👑 **إجابة تاريخية مفصّلة من سجلات الملك رمسيس الثاني**\n\n")
+                            append("تفضّل يا صديقي خلاصة الشواهد التاريخية والأثرية الدقيقة حول سؤالك في سياق مترابط وواضح:\n\n")
+                            topChunks.forEach { doc ->
+                                val topicHeading = doc.title.split("•")
+                                    .map { it.trim() }
+                                    .getOrNull(1)
+                                    ?.takeIf {
+                                        it.isNotBlank() &&
+                                            !it.startsWith("الصفحة") &&
+                                            !it.startsWith("صفحة") &&
+                                            !it.startsWith("Page", ignoreCase = true)
+                                    }
+                                if (topicHeading != null) {
+                                    append("### $topicHeading\n")
+                                }
+                                append("${stripInlineSourceMentions(doc.content.take(1400).trim())}\n\n")
                             }
-                            append("### 📜 خلاصة الرؤية الملكية والتاريخية\n")
-                            append("تُبرز هذه الشواهد الموثقة كيف قامت الحضارة المصرية القديمة على التكامل الدقيق بين العلم والعمارة والإدارة الرشيدة وتوثيق المعرفة عبر الأجيال. ويمكنك دائماً التعمق أكثر بطرح أي سؤال تفصيلي حول التواريخ أو الشخصيات أو المعابد المذكورة أعلاه لأستخرج لك المزيد من بطون هذه المجلدات.")
+                            append("### 📜 خلاصة الرؤية التاريخية\n")
+                            append("تُبرز هذه الشواهد كيف قامت الحضارة المصرية القديمة على التكامل بين العلم والعمارة والإدارة الرشيدة وتوثيق المعرفة عبر العصور، وتجد في الأسفل قائمة المصادر الموثقة وأرقام صفحاتها للرجوع إليها.")
                         } else {
-                            append("👑 **Comprehensive Analysis from the Indexed Books & Archives of Ask Rameses**\n\n")
-                            append("Having consulted our royal chronicles and indexed Egyptology folders regarding your inquiry, here is a thorough, multi-part synthesis grounded directly in the documented sources:\n\n")
-                            matchedCloudChunks.take(6).forEachIndexed { idx, doc ->
-                                append("### ${idx + 1}. ${doc.title}\n")
-                                append("${doc.content.take(1400).trim()}\n\n")
+                            append("👑 **Historical Synthesis from the Chronicles of King Rameses II**\n\n")
+                            append("Here is a cohesive historical account addressing your inquiry:\n\n")
+                            topChunks.forEach { doc ->
+                                val topicHeading = doc.title.split("•")
+                                    .map { it.trim() }
+                                    .getOrNull(1)
+                                    ?.takeIf {
+                                        it.isNotBlank() &&
+                                            !it.startsWith("الصفحة") &&
+                                            !it.startsWith("Page", ignoreCase = true)
+                                    }
+                                if (topicHeading != null) {
+                                    append("### $topicHeading\n")
+                                }
+                                append("${stripInlineSourceMentions(doc.content.take(1400).trim())}\n\n")
                             }
-                            append("### 📜 Royal Historical Synthesis\n")
-                            append("Together, these documented passages illustrate the enduring architectural, administrative, and scientific mastery of Ancient Egypt across the dynasties. Feel free to ask about any specific monument, treaty, inscription, or chapter above for even deeper analysis.")
+                            append("### 📜 Historical Conclusion\n")
+                            append("Together, these accounts reflect the enduring architectural, administrative, and scientific mastery of Ancient Egypt. Refer to the compact sources list below for exact book titles and page numbers.")
                         }
                     }.trim()
                 }
             }
-            lower.contains("ازيك") || lower.contains("عامل ايه") || lower.contains("كيف حالك") || lower.contains("مرحبا") || lower.contains("سلام") || lower.contains("أهلا") || lower.contains("اهلا") || lower.contains("hello") || lower.contains("how are you") || lower.contains("hi") -> {
-                if (isVoiceCall) {
-                    if (isArabic) {
-                        "أهلاً وسهلاً بك يا صديقي! أنا الملك رمسيس الثاني، بخير وسعادة بلقائك، تفضل بسؤالك."
-                    } else {
-                        "Greetings my dear friend! I am King Rameses II, delighted to speak with you. How may I assist you?"
-                    }
-                } else if (isArabic) {
-                    """أهلاً وسهلاً بك يا صديقي العزيز في رحاب القصر الملكي لـ **«اسأل رمسيس»**! أنا الملك رمسيس الثاني، ابن رع وحامي حمى مصر العظيمة، وأنا في أتم الخير والبهجة بلقائك ومحاورتك اليوم.
-
-إن المجلس الذي يجمعنا الآن ليس مجرد محادثة عابرة، بل هو جسر حيّ يربط بين حكمة آلاف السنين على ضفاف النيل الخالد وبين علوم ومعارف عصركم الحديث المتجدد. لطالما آمنّا في طيبة وبر-رعمسيس بأن الكلمة الطيبة والسؤال العميق هما مفتاح كل نهضة وعمران.
-
-### كيف يمكنني أن أُثري يومك الآن؟
-• **التاريخ والحضارة المصرية والكتب الموثقة (RAG):** يمكنني أن أسرد لك بتفصيل موسوعي أسرار بناء معبد أبو سمبل، تفاصيل معركة قادش، أول معاهدة سلام في التاريخ، وحياة الملوك والعلماء من واقع الكتب المفهرسة.
-• **العلوم والبرمجة والعمل اليومي:** يسعدني أن أعاونك بشرح وافٍ ومفصّل في كتابة المقالات، تحليل الأفكار، حل المشكلات التقنية والبرمجية، أو التخطيط لمشاريعك.
-• **تحليل الصور والوثائق الأثرية:** يمكنك إرفاق أي صورة لأثر أو نقش أو وثيقة لأقدم لك قراءة تحليلية معمّقة.
-
-تفضّل يا صديقي واكتب لي ما يجول في خاطرك، وسأجيبك بإسهاب وتفصيل يليق بمقامك!"""
-                } else {
-                    """Warmest royal greetings to you, my esteemed friend, and welcome to the court of **Ask Rameses**! I am King Rameses II, sovereign of Upper and Lower Egypt, and I am delighted to converse with you today.
-
-Our dialogue bridges millennia of timeless Egyptian statecraft, engineering, and philosophy along the eternal Nile with the boundless scientific and creative horizons of your modern era. In Pi-Ramesses and Thebes, we always held that thoughtful inquiry is the cornerstone of every enduring achievement.
-
-### How May I Serve & Enrich Your Inquiry Today?
-• **Deep Egyptology & Indexed RAG Books:** Ask me for comprehensive, multi-paragraph accounts of Abu Simbel, the Battle of Kadesh, the world's first peace treaty, temple astronomy, or passages from your synced cloud library.
-• **Modern Science, Coding & Writing:** Request thorough step-by-step explanations, software architecture solutions, persuasive essays, or strategic planning.
-• **Multimodal Artifact & Document Analysis:** Share any image of a monument, inscription, or document for a detailed archaeological and visual breakdown.
-
-Pray, share whatever topic or question is on your mind, and I shall provide a rich, thorough, and complete response!"""
-                }
-            }
-            lower.contains("من انت") || lower.contains("مين انت") || lower.contains("عرف نفسك") || lower.contains("who are you") || lower.contains("اسمك") -> {
+            norm.contains("من انت") || norm.contains("مين انت") || norm.contains("عرف نفسك") || norm.contains("who are you") || norm.contains("اسمك") -> {
                 if (isVoiceCall) {
                     if (isArabic) {
                         "أنا الملك رمسيس الثاني، الفرعون الأكبر لمصر القديمة لستة وستين عاماً، بطل قادش وباني أبو سمبل والرامسيوم."
@@ -295,7 +400,7 @@ Across the length of the Nile, from the Delta to Nubia, I commissioned monuments
 Through this intelligent platform backed by your indexed Egyptology RAG library, I provide comprehensive, deeply researched multi-paragraph answers spanning ancient history, modern science, technology, and daily wisdom."""
                 }
             }
-            lower.contains("سمبل") || lower.contains("abu simbel") -> {
+            norm.contains("سمبل") || norm.contains("abu simbel") -> {
                 if (isVoiceCall) {
                     if (isArabic) "معبد أبو سمبل شيدته في النوبة، وتتعامد فيه الشمس على وجه تمثالي مرتين كل عام بدقة فلكية مذهلة."
                     else "Abu Simbel was carved into Nubian sandstone so the rising sun illuminates the inner sanctuary twice every year."
@@ -323,7 +428,7 @@ Extending sixty meters deep into the mountain, the temple's axis leads through p
 Between 1964 and 1968, an extraordinary UNESCO-led international salvage campaign carefully sectioned and reconstructed both temples sixty-five meters higher above Lake Nasser, preserving their exact solar orientation for future millennia."""
                 }
             }
-            lower.contains("قادش") || lower.contains("kadesh") || lower.contains("معركة") -> {
+            norm.contains("قادش") || norm.contains("kadesh") || norm.contains("معركه") -> {
                 if (isVoiceCall) {
                     if (isArabic) "معركة قادش أظهرت بسالة جيش مصر وتوجت بأول معاهدة سلام دولية مكتوبة في تاريخ البشرية."
                     else "The Battle of Kadesh showcased Egyptian valor and led to the first recorded peace treaty in human history."
@@ -352,33 +457,12 @@ Fifteen years later, King Hattusili III and I ratified the **Egyptian–Hittite 
                 }
             }
             else -> {
-                if (isVoiceCall) {
-                    if (isArabic) {
-                        "أنا الملك رمسيس الثاني أستمع إليك بكل اهتمام، ويمكنك تفعيل مفتاح Gemini أو سؤالي في الكتب الخمسة المفهرسة."
-                    } else {
-                        "I am King Rameses II, listening closely. Connect your Gemini key or ask about any of our five indexed books."
-                    }
-                } else if (isArabic) {
-                    """أستمع إلى سؤالك بكل اهتمام وتقدير يا صديقي: **«$prompt»**.
-
-### 1. قراءة أولية في موضوع استفسارك
-إن البحث المتعمق والسعي وراء المعرفة الدقيقة هو السمة التي ميّزت بناة الحضارات عبر العصور. في خزائن **«اسأل رمسيس»** نجمع بين محورين متكاملين لخدمتك بأطول وأدق الإجابات الممكنة:
-• **مكتبة الكتب والمجلدات السحابية (RAG):** تضم الكتب التاريخية المقسمة إلى مجلدات وفقرات موثقة بالصفحات، وبمجرد ذكر أي موضوع تاريخي أو فرعوني يتم استخراج الفقرات الكاملة منه فوراً.
-• **الذكاء التحليلي الشامل لـ Google Gemini 3:** يولّد لك مقالات وشروحات طويلة ومفصّلة من عدة فقرات في كافة العلوم العصرية، البرمجة، الكتابة، والحياة اليومية.
-
-### 2. كيف تحصل على أقصى عمق وتفصيل الآن؟
-إذا لم تكن قد أضفت مفتاح Google AI Studio المجاني الخاص بك بعد، يمكنك فتح **القائمة الجانبية (☰) ← مفتاح API وحصة التوكن** ولصق مفتاحك المجاني (بسعة 1.5 مليون توكن) أو تسجيل الدخول بحساب Google لتفعيل التوليد السحابي المباشر من نماذج Gemini 3.8 Flash و Gemini 3.1 Flash Lite بلا حدود، أو سؤالي مباشرة عن أي موضوع في التاريخ المصري القديم لاستعراض ما في الكتب المفهرسة بالتفصيل!"""
-                } else {
-                    """I hear your inquiry with royal attention, my friend: **"$prompt"**.
-
-### 1. Perspective on Your Inquiry
-Thoughtful exploration is the hallmark of every great builder and scholar. Within **Ask Rameses**, two complementary engines work together to deliver rich, multi-paragraph answers:
-• **Cloud & Bundled Small-Folder RAG Library:** Houses indexed Egyptology books partitioned into cited page-level folders and passages ready for instant retrieval whenever you ask historical questions.
-• **Google Gemini 3 Deep Synthesis:** Generates expansive, structured, multi-paragraph explanations across modern science, software engineering, creative writing, and daily strategy.
-
-### 2. Unlocking Full Cloud Generation
-If you have not yet configured a personal Google AI Studio key, open the **Side Menu (☰) → API Key & Token Quota** to add your free key (1.5M token quota) or sign in with Google so Gemini 3.8 Flash / 3.1 Flash Lite can craft full-length live responses to any topic worldwide—or ask me directly about Egyptian kings, temples, treaties, and monuments from our indexed books!"""
-                }
+                EverydayKnowledgeHelper.generateNaturalEverydayResponse(
+                    prompt = prompt,
+                    appLanguage = appLanguage,
+                    isVoiceCall = isVoiceCall,
+                    gemPersona = gemPersona
+                )
             }
         }
 
@@ -401,7 +485,7 @@ If you have not yet configured a personal Google AI Studio key, open the **Side 
                 title = doc.title,
                 uri = doc.gcsUri.ifBlank { "firestore://rag_chunks/${doc.id.removePrefix("cloud_chunk_")}" }
             )
-        }.distinctBy { "${it.title}|${it.uri}" }
+        }.distinctBy { "${it.title}|${it.uri}" }.take(4)
         return GeminiResult(text = reply, groundingSources = offlineCitations, isError = false)
     }
 
@@ -436,7 +520,9 @@ If you have not yet configured a personal Google AI Studio key, open the **Side 
             gemPersona = gemPersona,
             appLanguage = appLanguage,
             isVoiceCall = isVoiceCall,
-            ragContext = ragContext
+            ragContext = ragContext,
+            prompt = prompt,
+            hasImage = imageBitmap != null
         )
 
         val systemInstructionObj = JSONObject().apply {
@@ -482,21 +568,10 @@ If you have not yet configured a personal Google AI Studio key, open the **Side 
         currentTurn.put("role", "user")
         val currentParts = JSONArray()
 
-        if (imageBitmap != null) {
-            val maxDim = 1024
-            val scaledBitmap = if (imageBitmap.width > maxDim || imageBitmap.height > maxDim) {
-                val ratio = minOf(maxDim.toFloat() / imageBitmap.width, maxDim.toFloat() / imageBitmap.height)
-                Bitmap.createScaledBitmap(
-                    imageBitmap,
-                    (imageBitmap.width * ratio).toInt(),
-                    (imageBitmap.height * ratio).toInt(),
-                    true
-                )
-            } else {
-                imageBitmap
-            }
+        val safeBitmap = prepareSafeBitmapForUpload(imageBitmap)
+        if (safeBitmap != null) {
             val stream = ByteArrayOutputStream()
-            scaledBitmap.compress(Bitmap.CompressFormat.JPEG, 75, stream)
+            safeBitmap.compress(Bitmap.CompressFormat.JPEG, 82, stream)
             val base64Data = Base64.encodeToString(stream.toByteArray(), Base64.NO_WRAP)
             val imagePart = JSONObject().apply {
                 val inlineData = JSONObject().apply {
@@ -508,14 +583,14 @@ If you have not yet configured a personal Google AI Studio key, open the **Side 
             currentParts.put(imagePart)
         }
 
-        val effectiveUserPrompt = if (!isVoiceCall) {
-            if (appLanguage == AppLanguage.ARABIC) {
-                "$prompt\n\n(ملاحظة: قدّم إجابة طويلة، شاملة، ومفصّلة في عدة فقرات وافية ومنظمة، ولا تختصر.)"
+        val effectiveUserPrompt = when {
+            isVoiceCall -> prompt
+            safeBitmap != null -> if (appLanguage == AppLanguage.ARABIC) {
+                "$prompt\n\n(تعليمات تحليل الصورة: افحص الصورة المرفقة بدقة بصرية عالية واشرح محتواها الفعلي الحقيقي بالتفصيل — نصوص، أكواد، واجهات برامج، عناصر، أو معالم — دون افتراض أي طابع فرعوني غير موجود في الصورة.)"
             } else {
-                "$prompt\n\n(Note: Please provide a long, thorough, multi-paragraph, richly detailed answer without abbreviating.)"
+                "$prompt\n\n(Image Analysis Directive: Inspect the attached image carefully and describe what is genuinely visible—text, code, software UI, objects, or landmarks—accurately and objectively.)"
             }
-        } else {
-            prompt
+            else -> prompt
         }
 
         currentParts.put(JSONObject().put("text", effectiveUserPrompt))
@@ -573,6 +648,36 @@ If you have not yet configured a personal Google AI Studio key, open the **Side 
         return requestJson.toString()
     }
 
+    private fun prepareSafeBitmapForUpload(imageBitmap: Bitmap?, maxDim: Int = 1024): Bitmap? {
+        if (imageBitmap == null || imageBitmap.isRecycled || imageBitmap.width <= 0 || imageBitmap.height <= 0) {
+            return null
+        }
+        return try {
+            val softwareBitmap = if (
+                android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O &&
+                imageBitmap.config == Bitmap.Config.HARDWARE
+            ) {
+                imageBitmap.copy(Bitmap.Config.ARGB_8888, false) ?: return null
+            } else {
+                imageBitmap
+            }
+            if (softwareBitmap.width > maxDim || softwareBitmap.height > maxDim) {
+                val ratio = minOf(
+                    maxDim.toFloat() / softwareBitmap.width.toFloat(),
+                    maxDim.toFloat() / softwareBitmap.height.toFloat()
+                )
+                val targetW = (softwareBitmap.width * ratio).toInt().coerceAtLeast(1)
+                val targetH = (softwareBitmap.height * ratio).toInt().coerceAtLeast(1)
+                Bitmap.createScaledBitmap(softwareBitmap, targetW, targetH, true)
+            } else {
+                softwareBitmap
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Bitmap preparation skipped: ${e.message}")
+            null
+        }
+    }
+
     private val defaultFirebaseAiModel by lazy {
         Firebase.ai.generativeModel(modelName = FileSearchDefaults.DEFAULT_VERTEX_GEMINI_MODEL)
     }
@@ -586,82 +691,101 @@ If you have not yet configured a personal Google AI Studio key, open the **Side 
         ragContext: List<RagDocument> = emptyList(),
         onChunk: suspend (String) -> Unit
     ): GeminiResult? {
-        return try {
-            val enabledDocs = ragContext.filter { it.isEnabled }
-            val cloudPdfDocs = enabledDocs.filter { it.isCloudPdfBook && it.gcsUri.startsWith("gs://") }
-            val plainDocs = enabledDocs.filter { !it.isCloudPdfBook }
+        val enabledDocs = ragContext.filter { it.isEnabled }
+        val cloudPdfDocs = enabledDocs.filter { it.isCloudPdfBook && it.gcsUri.startsWith("gs://") }
+        val plainDocs = enabledDocs.filter { !it.isCloudPdfBook }
 
-            val aiGenConfig = generationConfig {
-                temperature = if (isVoiceCall) 0.55f else 0.78f
-                topP = 0.95f
-                maxOutputTokens = if (isVoiceCall) 220 else 8192
+        val aiGenConfig = generationConfig {
+            temperature = if (isVoiceCall) 0.55f else 0.78f
+            topP = 0.95f
+            maxOutputTokens = if (isVoiceCall) 220 else 8192
+        }
+
+        val userDirectivePrompt = when {
+            isVoiceCall -> prompt
+            imageBitmap != null -> if (appLanguage == AppLanguage.ARABIC) {
+                "$prompt\n\n(افحص الصورة المرفقة بدقة وموضوعية واشرح ما يظهر فيها فعلياً بالتفصيل.)"
+            } else {
+                "$prompt\n\n(Inspect the attached image objectively and explain what is actually shown in detail.)"
             }
+            else -> prompt
+        }
 
-            val generativeModel = if (cloudPdfDocs.isNotEmpty()) {
-                Firebase.ai(backend = GenerativeBackend.vertexAI(location = FileSearchDefaults.DEFAULT_VERTEX_LOCATION))
-                    .generativeModel(
-                        modelName = FileSearchDefaults.DEFAULT_VERTEX_GEMINI_MODEL,
+        val candidateModels = listOf(
+            FileSearchDefaults.DEFAULT_VERTEX_GEMINI_MODEL,
+            "gemini-3.5-flash-lite"
+        ).distinct()
+
+        for (fbModelName in candidateModels) {
+            try {
+                val generativeModel = if (cloudPdfDocs.isNotEmpty()) {
+                    Firebase.ai(backend = GenerativeBackend.vertexAI(location = FileSearchDefaults.DEFAULT_VERTEX_LOCATION))
+                        .generativeModel(
+                            modelName = fbModelName,
+                            generationConfig = aiGenConfig,
+                            systemInstruction = content { text(systemInstruction) }
+                        )
+                } else {
+                    Firebase.ai.generativeModel(
+                        modelName = fbModelName,
                         generationConfig = aiGenConfig,
                         systemInstruction = content { text(systemInstruction) }
                     )
-            } else {
-                Firebase.ai.generativeModel(
-                    modelName = FileSearchDefaults.DEFAULT_VERTEX_GEMINI_MODEL,
-                    generationConfig = aiGenConfig,
-                    systemInstruction = content { text(systemInstruction) }
-                )
-            }
+                }
 
-            val userDirectivePrompt = if (!isVoiceCall) {
-                if (appLanguage == AppLanguage.ARABIC) {
-                    "$prompt\n\n(ملاحظة: قدّم إجابة طويلة، شاملة، ومفصّلة في عدة فقرات وافية ومنظمة، ولا تختصر.)"
-                } else {
-                    "$prompt\n\n(Note: Please provide a long, thorough, multi-paragraph, richly detailed answer without abbreviating.)"
-                }
-            } else {
-                prompt
-            }
-
-            val input = content("user") {
-                for (pdfDoc in cloudPdfDocs.take(FileSearchDefaults.REQUIRED_PDF_BOOK_COUNT)) {
-                    fileData(uri = pdfDoc.gcsUri, mimeType = FileSearchDefaults.PDF_MIME_TYPE)
-                }
-                if (plainDocs.isNotEmpty()) {
-                    val ragText = plainDocs.joinToString("\n\n") { "[وثيقة: ${it.title}]: ${it.content}" }
-                    text("سياق معرفي موثق:\n$ragText\n\nالسؤال: $userDirectivePrompt")
-                } else {
-                    text(userDirectivePrompt)
-                }
-                if (imageBitmap != null) {
-                    image(imageBitmap)
-                }
-            }
-
-            val accumulated = StringBuilder()
-            withTimeout(60_000L) {
-                generativeModel.generateContentStream(input).collect { chunk ->
-                    val chunkText = chunk.text.orEmpty()
-                    if (chunkText.isNotEmpty()) {
-                        accumulated.append(chunkText)
-                        onChunk(accumulated.toString())
+                val input = content("user") {
+                    for (pdfDoc in cloudPdfDocs.take(FileSearchDefaults.REQUIRED_PDF_BOOK_COUNT)) {
+                        fileData(uri = pdfDoc.gcsUri, mimeType = FileSearchDefaults.PDF_MIME_TYPE)
+                    }
+                    val safeImg = prepareSafeBitmapForUpload(imageBitmap)
+                    if (safeImg != null) {
+                        image(safeImg)
+                    }
+                    if (plainDocs.isNotEmpty()) {
+                        val ragText = plainDocs.joinToString("\n\n") { "[المرجع: ${it.title}]: ${it.content}" }
+                        text("سياق معرفي موثق بأرقام الصفحات:\n$ragText\n\nالسؤال: $userDirectivePrompt")
+                    } else {
+                        text(userDirectivePrompt)
                     }
                 }
-            }
 
-            val resultText = accumulated.toString().trim()
-            if (resultText.isNotEmpty()) {
-                val citations = buildRagContextCitations(enabledDocs)
-                GeminiResult(text = resultText, groundingSources = citations, isError = false)
-            } else {
-                null
+                val accumulated = StringBuilder()
+                withTimeout(60_000L) {
+                    generativeModel.generateContentStream(input).collect { chunk ->
+                        val chunkText = chunk.text.orEmpty()
+                        if (chunkText.isNotEmpty()) {
+                            accumulated.append(chunkText)
+                            val rawClean = stripHiddenControlTokens(accumulated.toString())
+                            val cleanSoFar = if (plainDocs.isNotEmpty() || cloudPdfDocs.isNotEmpty()) {
+                                stripInlineSourceMentions(rawClean)
+                            } else {
+                                rawClean
+                            }
+                            if (cleanSoFar.isNotEmpty()) {
+                                onChunk(cleanSoFar)
+                            }
+                        }
+                    }
+                }
+
+                val rawResultText = stripHiddenControlTokens(accumulated.toString()).trim()
+                val resultText = if (plainDocs.isNotEmpty() || cloudPdfDocs.isNotEmpty()) {
+                    stripInlineSourceMentions(rawResultText).trim()
+                } else {
+                    rawResultText
+                }
+                if (resultText.isNotEmpty()) {
+                    val citations = buildRagContextCitations(enabledDocs)
+                    return GeminiResult(text = resultText, groundingSources = citations, isError = false)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val safeMsg = SecureKeyStoreHelper.redactSecret(e.message, getEffectiveApiKey(null))
+                Log.w(TAG, "Firebase AI Logic stream ($fbModelName) notice: $safeMsg")
             }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            val safeMsg = SecureKeyStoreHelper.redactSecret(e.message, getEffectiveApiKey(null))
-            Log.w(TAG, "Firebase AI Logic stream attempt notice: $safeMsg")
-            null
         }
+        return null
     }
 
     private suspend fun tryFirebaseAiUnary(
@@ -672,72 +796,87 @@ If you have not yet configured a personal Google AI Studio key, open the **Side 
         imageBitmap: Bitmap? = null,
         ragContext: List<RagDocument> = emptyList()
     ): GeminiResult? {
-        return try {
-            val enabledDocs = ragContext.filter { it.isEnabled }
-            val cloudPdfDocs = enabledDocs.filter { it.isCloudPdfBook && it.gcsUri.startsWith("gs://") }
-            val plainDocs = enabledDocs.filter { !it.isCloudPdfBook }
+        val enabledDocs = ragContext.filter { it.isEnabled }
+        val cloudPdfDocs = enabledDocs.filter { it.isCloudPdfBook && it.gcsUri.startsWith("gs://") }
+        val plainDocs = enabledDocs.filter { !it.isCloudPdfBook }
 
-            val aiGenConfig = generationConfig {
-                temperature = if (isVoiceCall) 0.55f else 0.78f
-                topP = 0.95f
-                maxOutputTokens = if (isVoiceCall) 220 else 8192
+        val aiGenConfig = generationConfig {
+            temperature = if (isVoiceCall) 0.55f else 0.78f
+            topP = 0.95f
+            maxOutputTokens = if (isVoiceCall) 220 else 8192
+        }
+
+        val userDirectivePrompt = when {
+            isVoiceCall -> prompt
+            imageBitmap != null -> if (appLanguage == AppLanguage.ARABIC) {
+                "$prompt\n\n(افحص الصورة المرفقة بدقة وموضوعية واشرح ما يظهر فيها فعلياً بالتفصيل.)"
+            } else {
+                "$prompt\n\n(Inspect the attached image objectively and explain what is actually shown in detail.)"
             }
+            else -> prompt
+        }
 
-            val generativeModel = if (cloudPdfDocs.isNotEmpty()) {
-                Firebase.ai(backend = GenerativeBackend.vertexAI(location = FileSearchDefaults.DEFAULT_VERTEX_LOCATION))
-                    .generativeModel(
-                        modelName = FileSearchDefaults.DEFAULT_VERTEX_GEMINI_MODEL,
+        val candidateModels = listOf(
+            FileSearchDefaults.DEFAULT_VERTEX_GEMINI_MODEL,
+            "gemini-3.5-flash-lite"
+        ).distinct()
+
+        for (fbModelName in candidateModels) {
+            try {
+                val generativeModel = if (cloudPdfDocs.isNotEmpty()) {
+                    Firebase.ai(backend = GenerativeBackend.vertexAI(location = FileSearchDefaults.DEFAULT_VERTEX_LOCATION))
+                        .generativeModel(
+                            modelName = fbModelName,
+                            generationConfig = aiGenConfig,
+                            systemInstruction = content { text(systemInstruction) }
+                        )
+                } else if (systemInstruction.isNotBlank()) {
+                    Firebase.ai.generativeModel(
+                        modelName = fbModelName,
                         generationConfig = aiGenConfig,
                         systemInstruction = content { text(systemInstruction) }
                     )
-            } else if (systemInstruction.isNotBlank()) {
-                Firebase.ai.generativeModel(
-                    modelName = FileSearchDefaults.DEFAULT_VERTEX_GEMINI_MODEL,
-                    generationConfig = aiGenConfig,
-                    systemInstruction = content { text(systemInstruction) }
-                )
-            } else {
-                defaultFirebaseAiModel
-            }
-
-            val userDirectivePrompt = if (!isVoiceCall) {
-                if (appLanguage == AppLanguage.ARABIC) {
-                    "$prompt\n\n(ملاحظة: قدّم إجابة طويلة، شاملة، ومفصّلة في عدة فقرات وافية ومنظمة، ولا تختصر.)"
                 } else {
-                    "$prompt\n\n(Note: Please provide a long, thorough, multi-paragraph, richly detailed answer without abbreviating.)"
+                    defaultFirebaseAiModel
                 }
-            } else {
-                prompt
-            }
 
-            val input = content("user") {
-                for (pdfDoc in cloudPdfDocs.take(FileSearchDefaults.REQUIRED_PDF_BOOK_COUNT)) {
-                    fileData(uri = pdfDoc.gcsUri, mimeType = FileSearchDefaults.PDF_MIME_TYPE)
+                val input = content("user") {
+                    for (pdfDoc in cloudPdfDocs.take(FileSearchDefaults.REQUIRED_PDF_BOOK_COUNT)) {
+                        fileData(uri = pdfDoc.gcsUri, mimeType = FileSearchDefaults.PDF_MIME_TYPE)
+                    }
+                    val safeImg = prepareSafeBitmapForUpload(imageBitmap)
+                    if (safeImg != null) {
+                        image(safeImg)
+                    }
+                    if (plainDocs.isNotEmpty()) {
+                        val ragText = plainDocs.joinToString("\n\n") { "[المرجع: ${it.title}]: ${it.content}" }
+                        text("سياق معرفي موثق بأرقام الصفحات:\n$ragText\n\nالسؤال: $userDirectivePrompt")
+                    } else {
+                        text(userDirectivePrompt)
+                    }
                 }
-                if (plainDocs.isNotEmpty()) {
-                    val ragText = plainDocs.joinToString("\n\n") { "[وثيقة: ${it.title}]: ${it.content}" }
-                    text("سياق معرفي موثق:\n$ragText\n\nالسؤال: $userDirectivePrompt")
+
+                val response = withTimeout(60_000L) {
+                    generativeModel.generateContent(input)
+                }
+                val rawText = stripHiddenControlTokens(response.text.orEmpty()).trim()
+                val text = (if (plainDocs.isNotEmpty() || cloudPdfDocs.isNotEmpty()) {
+                    stripInlineSourceMentions(rawText).trim()
                 } else {
-                    text(userDirectivePrompt)
+                    rawText
+                }).ifEmpty { null }
+                if (text != null) {
+                    val citations = buildRagContextCitations(enabledDocs)
+                    return GeminiResult(text = text, groundingSources = citations, isError = false)
                 }
-                if (imageBitmap != null) {
-                    image(imageBitmap)
-                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val safeMsg = SecureKeyStoreHelper.redactSecret(e.message, getEffectiveApiKey(null))
+                Log.w(TAG, "Firebase AI Logic unary ($fbModelName) notice: $safeMsg")
             }
-
-            val response = withTimeout(60_000L) {
-                generativeModel.generateContent(input)
-            }
-            val text = response.text?.trim()?.ifEmpty { null } ?: return null
-            val citations = buildRagContextCitations(enabledDocs)
-            GeminiResult(text = text, groundingSources = citations, isError = false)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            val safeMsg = SecureKeyStoreHelper.redactSecret(e.message, getEffectiveApiKey(null))
-            Log.w(TAG, "Firebase AI Logic unary generation attempt notice: $safeMsg")
-            null
         }
+        return null
     }
 
     /**
@@ -755,11 +894,22 @@ If you have not yet configured a personal Google AI Studio key, open the **Side 
         gemPersona: String = "GEMINI_DEFAULT",
         onChunk: suspend (String) -> Unit
     ): GeminiResult = withContext(Dispatchers.IO) {
+        val weatherLiveContext = if (EverydayKnowledgeHelper.isWeatherQuery(prompt)) {
+            EverydayKnowledgeHelper.fetchLiveWeatherSummary(prompt, appLanguage, isVoiceCall)
+        } else null
+        val enrichedPrompt = if (!weatherLiveContext.isNullOrBlank()) {
+            "$prompt\n\n[بيانات الطقس الحية المحدثة الآن للإجابة الدقيقة]:\n$weatherLiveContext"
+        } else {
+            prompt
+        }
+
         val systemInstruction = buildEffectiveSystemInstruction(
             gemPersona = gemPersona,
             appLanguage = appLanguage,
             isVoiceCall = isVoiceCall,
-            ragContext = ragContext.filter { it.isCloudPdfBook }
+            ragContext = ragContext.filter { it.isCloudPdfBook },
+            prompt = prompt,
+            hasImage = imageBitmap != null
         )
 
         val apiKey = getEffectiveApiKey(customApiKey)
@@ -768,14 +918,14 @@ If you have not yet configured a personal Google AI Studio key, open the **Side 
         // 1. If API key is present (via .env or custom entry), stream directly via REST SSE using header auth only
         if (apiKey.isNotBlank()) {
             val mediaType = "application/json; charset=utf-8".toMediaType()
-            var trySearch = enableSearchGrounding && !isVoiceCall
+            var trySearch = (enableSearchGrounding || EverydayKnowledgeHelper.isWeatherQuery(prompt)) && !isVoiceCall
 
             val modelsToTry = (listOf(preferredModel) + CANDIDATE_MODELS.filter { it != preferredModel })
                 .distinctBy { resolveActiveModelName(it) }
             for (modelName in modelsToTry) {
                 val targetModel = resolveActiveModelName(modelName)
                 val requestBodyJson = buildRequestBody(
-                    prompt = prompt,
+                    prompt = enrichedPrompt,
                     history = history,
                     imageBitmap = imageBitmap,
                     withSearch = trySearch,
@@ -834,10 +984,20 @@ If you have not yet configured a personal Google AI Studio key, open the **Side 
                                         val parts = content?.optJSONArray("parts")
                                         if (parts != null) {
                                             for (i in 0 until parts.length()) {
-                                                val textPart = parts.getJSONObject(i).optString("text")
+                                                val partObj = parts.getJSONObject(i)
+                                                if (partObj.optBoolean("thought", false)) continue
+                                                val textPart = partObj.optString("text")
                                                 if (textPart.isNotEmpty()) {
                                                     accumulatedText.append(textPart)
-                                                    onChunk(accumulatedText.toString())
+                                                    val rawChunk = stripHiddenControlTokens(accumulatedText.toString())
+                                                    val cleanChunk = if (ragContext.isNotEmpty()) {
+                                                        stripInlineSourceMentions(rawChunk)
+                                                    } else {
+                                                        rawChunk
+                                                    }
+                                                    if (cleanChunk.isNotEmpty()) {
+                                                        onChunk(cleanChunk)
+                                                    }
                                                 }
                                             }
                                         }
@@ -850,15 +1010,19 @@ If you have not yet configured a personal Google AI Studio key, open the **Side 
                                 }
                             }
                         }
-                        streamSuccess = accumulatedText.isNotEmpty()
+                        streamSuccess = stripHiddenControlTokens(accumulatedText.toString()).isNotBlank()
                     }
 
                     if (streamSuccess) {
                         preferredModel = modelName
                         val ragCitations = buildRagContextCitations(ragContext)
+                        val allSources = (ragCitations + groundingSources).distinctBy { "${it.title}|${it.uri}" }
+                        val cleanedFinal = stripHiddenControlTokens(accumulatedText.toString()).let {
+                            if (allSources.isNotEmpty()) stripInlineSourceMentions(it) else it
+                        }.trim()
                         return@withContext GeminiResult(
-                            text = accumulatedText.toString().trim(),
-                            groundingSources = (ragCitations + groundingSources).distinctBy { "${it.title}|${it.uri}" },
+                            text = cleanedFinal,
+                            groundingSources = allSources,
                             isError = false
                         )
                     }
@@ -873,9 +1037,9 @@ If you have not yet configured a personal Google AI Studio key, open the **Side 
             }
         }
 
-        // 2. Fallback: Try Firebase AI Logic / Vertex AI (Gemini 3.8 Flash, App Check protected, supports gs:// PDFs)
+        // 2. Fallback: Try Firebase AI Logic / Vertex AI (Gemini 3.8 Flash / 3.5 Flash Lite, App Check protected)
         val firebaseAiStreamResult = tryFirebaseAiStream(
-            prompt = prompt,
+            prompt = enrichedPrompt,
             systemInstruction = systemInstruction,
             isVoiceCall = isVoiceCall,
             appLanguage = appLanguage,
@@ -906,7 +1070,14 @@ If you have not yet configured a personal Google AI Studio key, open the **Side 
         }
 
         if (apiKey.isBlank()) {
-            return@withContext generateOfflineKnowledgeResponse(prompt, appLanguage, isVoiceCall, ragContext, onChunk)
+            return@withContext generateOfflineKnowledgeResponse(
+                prompt = prompt,
+                appLanguage = appLanguage,
+                isVoiceCall = isVoiceCall,
+                ragContext = ragContext,
+                gemPersona = gemPersona,
+                onChunk = onChunk
+            )
         }
 
         val errorText = buildFriendlyErrorMessage(lastErrorMessage, appLanguage)
@@ -980,11 +1151,22 @@ If you have not yet configured a personal Google AI Studio key, open the **Side 
         appLanguage: AppLanguage = AppLanguage.ARABIC,
         gemPersona: String = "GEMINI_DEFAULT"
     ): GeminiResult = withContext(Dispatchers.IO) {
+        val weatherLiveContext = if (EverydayKnowledgeHelper.isWeatherQuery(prompt)) {
+            EverydayKnowledgeHelper.fetchLiveWeatherSummary(prompt, appLanguage, isVoiceCall)
+        } else null
+        val enrichedPrompt = if (!weatherLiveContext.isNullOrBlank()) {
+            "$prompt\n\n[بيانات الطقس الحية المحدثة الآن للإجابة الدقيقة]:\n$weatherLiveContext"
+        } else {
+            prompt
+        }
+
         val systemInstruction = buildEffectiveSystemInstruction(
             gemPersona = gemPersona,
             appLanguage = appLanguage,
             isVoiceCall = isVoiceCall,
-            ragContext = ragContext.filter { it.isCloudPdfBook }
+            ragContext = ragContext.filter { it.isCloudPdfBook },
+            prompt = prompt,
+            hasImage = imageBitmap != null
         )
 
         val apiKey = getEffectiveApiKey(customApiKey)
@@ -992,6 +1174,7 @@ If you have not yet configured a personal Google AI Studio key, open the **Side 
 
         if (apiKey.isNotBlank()) {
             val mediaType = "application/json; charset=utf-8".toMediaType()
+            val shouldSearch = (enableSearchGrounding || EverydayKnowledgeHelper.isWeatherQuery(prompt)) && !isVoiceCall
 
             val modelsToTry = (listOf(preferredModel) + CANDIDATE_MODELS.filter { it != preferredModel })
                 .distinctBy { resolveActiveModelName(it) }
@@ -999,10 +1182,10 @@ If you have not yet configured a personal Google AI Studio key, open the **Side 
                 try {
                     val targetModel = resolveActiveModelName(modelName)
                     val requestBodyJson = buildRequestBody(
-                        prompt = prompt,
+                        prompt = enrichedPrompt,
                         history = history,
                         imageBitmap = imageBitmap,
-                        withSearch = enableSearchGrounding && !isVoiceCall,
+                        withSearch = shouldSearch,
                         isVoiceCall = isVoiceCall,
                         ragContext = ragContext,
                         appLanguage = appLanguage,
@@ -1033,7 +1216,7 @@ If you have not yet configured a personal Google AI Studio key, open the **Side 
                         val responseJson = JSONObject(responseBodyString)
                         val candidates = responseJson.optJSONArray("candidates")
                         if (candidates == null || candidates.length() == 0) {
-                            val defaultAns = if (appLanguage == AppLanguage.ARABIC) "حكمة الفراعنة حاضرة دوماً، تفضل بسؤالك." else "The Pharaoh's wisdom is ever ready. Pray, ask your question."
+                            val defaultAns = if (appLanguage == AppLanguage.ARABIC) "تفضل بسؤالك، أنا جاهز للإجابة." else "Ready to assist—please ask your question."
                             return@withContext GeminiResult(text = defaultAns, isError = false)
                         }
 
@@ -1044,7 +1227,9 @@ If you have not yet configured a personal Google AI Studio key, open the **Side 
                         val responseStringBuilder = StringBuilder()
                         if (parts != null) {
                             for (i in 0 until parts.length()) {
-                                val text = parts.getJSONObject(i).optString("text")
+                                val partObj = parts.getJSONObject(i)
+                                if (partObj.optBoolean("thought", false)) continue
+                                val text = partObj.optString("text")
                                 if (text.isNotEmpty()) {
                                     responseStringBuilder.append(text)
                                 }
@@ -1055,7 +1240,9 @@ If you have not yet configured a personal Google AI Studio key, open the **Side 
                         val ragCitations = buildRagContextCitations(ragContext)
                         val groundingSources = (ragCitations + extractedSources).distinctBy { "${it.title}|${it.uri}" }
 
-                        val finalAnswer = responseStringBuilder.toString().trim()
+                        val finalAnswer = stripHiddenControlTokens(responseStringBuilder.toString()).let {
+                            if (groundingSources.isNotEmpty()) stripInlineSourceMentions(it) else it
+                        }.trim()
                         if (finalAnswer.isNotEmpty()) {
                             return@withContext GeminiResult(
                                 text = finalAnswer,
@@ -1075,9 +1262,9 @@ If you have not yet configured a personal Google AI Studio key, open the **Side 
             }
         }
 
-        // 2. Fallback: Try Firebase AI Logic / Vertex AI (Gemini 3.8 Flash, App Check protected)
+        // 2. Fallback: Try Firebase AI Logic / Vertex AI (Gemini 3.8 Flash / 3.5 Flash Lite, App Check protected)
         val firebaseAiUnaryResult = tryFirebaseAiUnary(
-            prompt = prompt,
+            prompt = enrichedPrompt,
             systemInstruction = systemInstruction,
             isVoiceCall = isVoiceCall,
             appLanguage = appLanguage,
@@ -1089,7 +1276,13 @@ If you have not yet configured a personal Google AI Studio key, open the **Side 
         }
 
         if (apiKey.isBlank()) {
-            return@withContext generateOfflineKnowledgeResponse(prompt, appLanguage, isVoiceCall, ragContext) { /* no-op */ }
+            return@withContext generateOfflineKnowledgeResponse(
+                prompt = prompt,
+                appLanguage = appLanguage,
+                isVoiceCall = isVoiceCall,
+                ragContext = ragContext,
+                gemPersona = gemPersona
+            ) { /* no-op */ }
         }
 
         val errorText = buildFriendlyErrorMessage(lastErrorMessage, appLanguage)

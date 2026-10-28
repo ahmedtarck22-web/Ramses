@@ -1,24 +1,24 @@
 package com.example.ui.components
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -35,7 +35,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -51,11 +50,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import com.example.data.model.AppLanguage
 import com.example.data.model.RamsesArtifact
 
@@ -69,14 +65,25 @@ fun Ramses3DArtifactDialog(
     val artifacts = RamsesArtifact.ALL_ARTIFACTS
     var selectedArtifact by remember { mutableStateOf(artifacts[0]) }
 
-    Dialog(
-        onDismissRequest = onDismissRequest,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+    BackHandler(onBack = onDismissRequest)
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xEB070604))
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null
+            ) { /* Consume background touches */ }
+            .statusBarsPadding()
+            .navigationBarsPadding()
+            .padding(12.dp)
+            .testTag("artifact_3d_overlay"),
+        contentAlignment = Alignment.Center
     ) {
         Surface(
             modifier = Modifier
-                .fillMaxWidth(0.96f)
-                .fillMaxHeight(0.92f)
+                .fillMaxSize()
                 .clip(RoundedCornerShape(24.dp))
                 .border(
                     width = 1.5.dp,
@@ -147,7 +154,86 @@ fun Ramses3DArtifactDialog(
 
                 Spacer(modifier = Modifier.height(10.dp))
 
-                // Unified Scrollable Body: Selector Tabs + 3D Viewport + Description + Historical Fact
+                // Fixed Artifact Selector Tabs (kept outside verticalScroll)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    artifacts.forEach { artifact ->
+                        val isSelected = artifact.id == selectedArtifact.id
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(
+                                    if (isSelected) Color(0xFF38290D) else Color(0xFF19160E)
+                                )
+                                .border(
+                                    width = if (isSelected) 1.5.dp else 0.5.dp,
+                                    color = if (isSelected) Color(0xFFFFDF73) else Color(0xFF4A3E20),
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                                .clickable { selectedArtifact = artifact }
+                                .padding(horizontal = 12.dp, vertical = 10.dp)
+                                .testTag("artifact_chip_${artifact.id}")
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Text(
+                                    text = artifact.iconEmoji,
+                                    fontSize = 14.sp
+                                )
+                                Text(
+                                    text = artifact.title(appLanguage),
+                                    color = if (isSelected) Color(0xFFFFDF73) else Color(0xFFC7B992),
+                                    fontSize = 12.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Fixed 3D Viewport (kept outside verticalScroll so SurfaceView never crashes or intercepts scroll)
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(220.dp)
+                        .clip(RoundedCornerShape(16.dp))
+                        .border(1.dp, Color(0xFF443818), RoundedCornerShape(16.dp))
+                ) {
+                    RamsesSceneView(
+                        modifier = Modifier.fillMaxSize(),
+                        modelAssetPath = selectedArtifact.modelPath,
+                        showControls = true,
+                        initialAutoRotate = true,
+                        idleAnimationEnabled = false
+                    )
+
+                    Surface(
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(8.dp),
+                        shape = RoundedCornerShape(8.dp),
+                        color = Color(0xAA0F0D09)
+                    ) {
+                        Text(
+                            text = if (isArabic) "اسحب بإصبعك للتدوير • استخدم الأزرار للتكبير" else "Drag with finger to rotate • Buttons to zoom",
+                            color = Color(0xFFC7B992),
+                            fontSize = 10.sp,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Scrollable Description & Historical Fact
                 Column(
                     modifier = Modifier
                         .weight(1f)
@@ -155,82 +241,6 @@ fun Ramses3DArtifactDialog(
                         .testTag("artifact_dialog_scroll"),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    // Artifact Selector Tabs
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        artifacts.forEach { artifact ->
-                            val isSelected = artifact.id == selectedArtifact.id
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(
-                                        if (isSelected) Color(0xFF38290D) else Color(0xFF19160E)
-                                    )
-                                    .border(
-                                        width = if (isSelected) 1.5.dp else 0.5.dp,
-                                        color = if (isSelected) Color(0xFFFFDF73) else Color(0xFF4A3E20),
-                                        shape = RoundedCornerShape(12.dp)
-                                    )
-                                    .clickable { selectedArtifact = artifact }
-                                    .padding(horizontal = 12.dp, vertical = 10.dp)
-                                    .testTag("artifact_chip_${artifact.id}")
-                            ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    Text(
-                                        text = artifact.iconEmoji,
-                                        fontSize = 14.sp
-                                    )
-                                    Text(
-                                        text = artifact.title(appLanguage),
-                                        color = if (isSelected) Color(0xFFFFDF73) else Color(0xFFC7B992),
-                                        fontSize = 12.sp,
-                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    // 3D Viewport
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(240.dp)
-                            .clip(RoundedCornerShape(16.dp))
-                            .border(1.dp, Color(0xFF443818), RoundedCornerShape(16.dp))
-                    ) {
-                        RamsesSceneView(
-                            modifier = Modifier.fillMaxSize(),
-                            modelAssetPath = selectedArtifact.modelPath,
-                            showControls = true,
-                            initialAutoRotate = true
-                        )
-
-                        // Touch guide hint
-                        Surface(
-                            modifier = Modifier
-                                .align(Alignment.TopStart)
-                                .padding(8.dp),
-                            shape = RoundedCornerShape(8.dp),
-                            color = Color(0xAA0F0D09)
-                        ) {
-                            Text(
-                                text = if (isArabic) "اسحب للتدوير • استخدم الأزرار للتكبير" else "Drag to rotate • Buttons to zoom",
-                                color = Color(0xFFC7B992),
-                                fontSize = 10.sp,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                            )
-                        }
-                    }
-
-                    // Title and Dynasty
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -259,7 +269,6 @@ fun Ramses3DArtifactDialog(
                         }
                     }
 
-                    // Description
                     Text(
                         text = selectedArtifact.description(appLanguage),
                         color = Color(0xFFDCD2BA),
@@ -267,7 +276,6 @@ fun Ramses3DArtifactDialog(
                         lineHeight = 18.sp
                     )
 
-                    // Fact Card
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         colors = CardDefaults.cardColors(containerColor = Color(0xFF1E190D)),

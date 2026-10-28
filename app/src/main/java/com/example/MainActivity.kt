@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -17,6 +18,7 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Image
@@ -70,6 +72,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -105,6 +108,7 @@ import com.example.ui.components.RamsesHeader
 import com.example.ui.components.RamsesInputBar
 import com.example.ui.components.RiggingStudioDialog
 import com.example.ui.components.SideMenuDrawer
+import com.example.ui.components.isRobolectricRuntime
 import com.example.ui.theme.AmiriFontFamily
 import com.example.ui.theme.CinzelFontFamily
 import com.example.ui.theme.EgyptianCyan
@@ -117,6 +121,7 @@ import com.example.ui.theme.TextPrimary
 import com.example.ui.theme.TextSecondary
 import com.example.firebase.configureAppCheck
 import com.example.ui.viewmodel.RamsesViewModel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -179,21 +184,30 @@ fun RamsesApp(viewModel: RamsesViewModel) {
     var showAuthDialog by remember { mutableStateOf(false) }
     var showApiKeyDialog by remember { mutableStateOf(false) }
     var showRagDialog by remember { mutableStateOf(false) }
-    var showRigStudioDialog by remember { mutableStateOf(false) }
     var show3DArtifactsDialog by remember { mutableStateOf(false) }
     var showModelSelectorDialog by remember { mutableStateOf(false) }
+    var showOpeningSplash by rememberSaveable { mutableStateOf(!isRobolectricRuntime()) }
 
-    val listState = rememberLazyListState()
+    LaunchedEffect(showOpeningSplash) {
+        if (showOpeningSplash) {
+            delay(1250L)
+            showOpeningSplash = false
+        }
+    }
+
+    val splitListState = rememberLazyListState()
+    val fullListState = rememberLazyListState()
+    val activeListState = if (is3DViewMode) splitListState else fullListState
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     var autoFollowStream by remember { mutableStateOf(true) }
-    val canScrollDown by remember {
-        derivedStateOf { listState.canScrollForward }
+    val canScrollDown by remember(is3DViewMode) {
+        derivedStateOf { activeListState.canScrollForward }
     }
 
     // Track manual user scroll gestures so streaming never fights or blocks manual scrolling
-    LaunchedEffect(listState) {
+    LaunchedEffect(activeListState) {
         snapshotFlow {
-            listState.isScrollInProgress to listState.canScrollForward
+            activeListState.isScrollInProgress to activeListState.canScrollForward
         }.collect { (scrolling, canForward) ->
             if (scrolling && canForward) {
                 autoFollowStream = false
@@ -203,21 +217,41 @@ fun RamsesApp(viewModel: RamsesViewModel) {
         }
     }
 
+    BackHandler(enabled = drawerState.isOpen && !isGeminiLiveActive) {
+        coroutineScope.launch { drawerState.close() }
+    }
+
+    BackHandler(enabled = isGeminiLiveActive) {
+        viewModel.endGeminiLiveCall()
+    }
+
     // Scroll to bottom when a new message is sent/added
-    LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty()) {
+    LaunchedEffect(messages.size, is3DViewMode) {
+        if (!isGeminiLiveActive && messages.isNotEmpty()) {
             autoFollowStream = true
-            val lastIdx = (listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(messages.size - 1)
-            listState.animateScrollToItem(lastIdx)
+            kotlinx.coroutines.yield()
+            val total = activeListState.layoutInfo.totalItemsCount
+            if (total > 0) {
+                try {
+                    activeListState.animateScrollToItem((total - 1).coerceAtLeast(0))
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (_: Exception) {}
+            }
         }
     }
 
     // Follow streaming text smoothly only when user has not scrolled up
-    LaunchedEffect(streamingMessage?.text?.length, isLoading) {
-        if (autoFollowStream && !listState.isScrollInProgress) {
-            val lastIdx = listState.layoutInfo.totalItemsCount - 1
-            if (lastIdx >= 0) {
-                listState.scrollToItem(lastIdx)
+    LaunchedEffect(streamingMessage?.text?.length, isLoading, is3DViewMode) {
+        if (!isGeminiLiveActive && autoFollowStream && !activeListState.isScrollInProgress) {
+            kotlinx.coroutines.yield()
+            val total = activeListState.layoutInfo.totalItemsCount
+            if (total > 0) {
+                try {
+                    activeListState.scrollToItem((total - 1).coerceAtLeast(0))
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (_: Exception) {}
             }
         }
     }
@@ -297,68 +331,73 @@ fun RamsesApp(viewModel: RamsesViewModel) {
     CompositionLocalProvider(
         LocalLayoutDirection provides if (appLanguage == AppLanguage.ARABIC) LayoutDirection.Rtl else LayoutDirection.Ltr
     ) {
-        ModalNavigationDrawer(
-            drawerState = drawerState,
-            drawerContent = {
-                SideMenuDrawer(
-                    userProfile = userProfile,
-                    sessions = sessions,
-                    currentSessionId = currentSessionId,
-                    selectedGem = selectedGem,
-                    onSelectGem = { gemId -> viewModel.selectGem(gemId) },
-                    appLanguage = appLanguage,
-                    onToggleLanguage = { viewModel.toggleLanguage() },
-                    onSelectSession = { sid -> viewModel.switchSession(sid) },
-                    onDeleteSession = { sid -> viewModel.deleteSession(sid) },
-                    onClearAllChats = { viewModel.clearAllConversations() },
-                    isSearchGroundingEnabled = isSearchGroundingEnabled,
-                    onToggleSearchGrounding = { viewModel.toggleSearchGrounding() },
-                    onOpenAuthDialog = { showAuthDialog = true },
-                    onOpenApiKeyDialog = { showApiKeyDialog = true },
-                    onOpenRagDialog = { showRagDialog = true },
-                    onOpenRigStudioDialog = { showRigStudioDialog = true },
-                    onOpen3DArtifactsDialog = { show3DArtifactsDialog = true },
-                    onNewChatClick = { viewModel.startNewSession() },
-                    onVoiceCallClick = {
-                        val hasPermission = ContextCompat.checkSelfPermission(
-                            context,
-                            Manifest.permission.RECORD_AUDIO
-                        ) == PackageManager.PERMISSION_GRANTED
-
-                        if (hasPermission) {
-                            viewModel.startGeminiLiveCall()
-                        } else {
-                            geminiLivePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-                        }
-                    },
-                    onCloseDrawer = {
-                        coroutineScope.launch { drawerState.close() }
-                    }
-                )
-            }
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
         ) {
-            LiquidGlassBackground {
-                Scaffold(
-                    containerColor = Color.Transparent,
-                    topBar = {
-                        // Upper header with Ramses icon, title Ask Rameses, language switch, voice call, 3D relics, and personal API key shortcut
-                        RamsesHeader(
-                            hasPersonalApiKey = customApiKey.isNotBlank(),
-                            appLanguage = appLanguage,
-                            selectedModelName = selectedModel,
-                            onModelClick = { showModelSelectorDialog = true },
-                            onToggleLanguage = { viewModel.toggleLanguage() },
-                            onProfileClick = { showAuthDialog = true },
-                            onOpen3DArtifactsClick = { show3DArtifactsDialog = true },
-                            is3DAvatarMode = is3DViewMode,
-                            onToggle3DAvatarMode = { viewModel.toggle3DViewMode() },
-                            onApiKeyClick = { showApiKeyDialog = true },
-                            onMenuClick = {
-                                coroutineScope.launch { drawerState.open() }
-                            },
-                            modifier = Modifier.statusBarsPadding()
-                        )
-                    },
+            ModalNavigationDrawer(
+                drawerState = drawerState,
+                drawerContent = {
+                    SideMenuDrawer(
+                        userProfile = userProfile,
+                        hasPersonalApiKey = customApiKey.isNotBlank(),
+                        sessions = sessions,
+                        currentSessionId = currentSessionId,
+                        selectedGem = selectedGem,
+                        onSelectGem = { gemId -> viewModel.selectGem(gemId) },
+                        appLanguage = appLanguage,
+                        onToggleLanguage = { viewModel.toggleLanguage() },
+                        onSelectSession = { sid -> viewModel.switchSession(sid) },
+                        onDeleteSession = { sid -> viewModel.deleteSession(sid) },
+                        onClearAllChats = { viewModel.clearAllConversations() },
+                        isSearchGroundingEnabled = isSearchGroundingEnabled,
+                        onToggleSearchGrounding = { viewModel.toggleSearchGrounding() },
+                        onOpenAuthDialog = { showAuthDialog = true },
+                        onOpenApiKeyDialog = { showApiKeyDialog = true },
+                        onOpenRagDialog = { showRagDialog = true },
+                        onOpen3DArtifactsDialog = { show3DArtifactsDialog = true },
+                        onNewChatClick = { viewModel.startNewSession() },
+                        onVoiceCallClick = {
+                            val hasPermission = ContextCompat.checkSelfPermission(
+                                context,
+                                Manifest.permission.RECORD_AUDIO
+                            ) == PackageManager.PERMISSION_GRANTED
+
+                            if (hasPermission) {
+                                viewModel.startGeminiLiveCall()
+                            } else {
+                                geminiLivePermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                            }
+                        },
+                        onCloseDrawer = {
+                            coroutineScope.launch { drawerState.close() }
+                        }
+                    )
+                }
+            ) {
+                LiquidGlassBackground {
+                    Scaffold(
+                        containerColor = Color.Transparent,
+                        topBar = {
+                            RamsesHeader(
+                                hasPersonalApiKey = customApiKey.isNotBlank(),
+                                userProfile = userProfile,
+                                appLanguage = appLanguage,
+                                selectedModelName = selectedModel,
+                                onModelClick = { showModelSelectorDialog = true },
+                                onToggleLanguage = { viewModel.toggleLanguage() },
+                                onProfileClick = { showAuthDialog = true },
+                                onOpen3DArtifactsClick = { show3DArtifactsDialog = true },
+                                is3DAvatarMode = is3DViewMode,
+                                onToggle3DAvatarMode = { viewModel.toggle3DViewMode() },
+                                onApiKeyClick = { showApiKeyDialog = true },
+                                onMenuClick = {
+                                    coroutineScope.launch { drawerState.open() }
+                                },
+                                modifier = Modifier.statusBarsPadding()
+                            )
+                        },
                 bottomBar = {
                     RamsesInputBar(
                         inputText = inputText,
@@ -414,93 +453,66 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                 ) {
                     if (is3DViewMode) {
                         // =========================================================================
-                        // SPLIT VIEW MODE: Top 50% 3D Ramses Avatar, Bottom 50% Text Conversation
+                        // SPLIT VIEW MODE: Compact Top 3D Ramses Statue (Pure Black) + Taller Messages Container
                         // =========================================================================
                         Column(
-                            modifier = Modifier.fillMaxSize()
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(Color.Black)
                         ) {
-                            // 1. TOP HALF OF SCREEN (52% height): King Ramses II 3D Interactive Model
-                            // Reacts in real time with body gestures, head nods, breathing, and phonetic lipsync!
+                            // 1. COMPACT TOP 3D SECTION (~34% height): Statue lowered cleanly on pure black
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .weight(1.08f)
+                                    .weight(0.60f)
+                                    .background(Color.Black)
                             ) {
-                                RamsesAvatar3DView(
-                                    modifier = Modifier.fillMaxSize(),
-                                    isSpeaking = isSpeaking,
-                                    isListening = isVoiceTyping,
-                                    isThinking = isLoading,
-                                    rmsDb = liveRmsDb,
-                                    appLanguage = appLanguage,
-                                    rigConfig = avatarRigConfig,
-                                    onOpenRigStudio = { showRigStudioDialog = true },
-                                    onStopSpeaking = { viewModel.stopSpeaking() },
-                                    onToggleAutoSpeak = { viewModel.toggleAutoSpeak() },
-                                    isAutoSpeakEnabled = isAutoSpeakEnabled
-                                )
+                                // Only keep one active 3D Filament Scene at a time so opening
+                                // Gemini Live or the 3D Artifacts Gallery never contends for surfaces.
+                                val canMountMainAvatar = !showOpeningSplash && !isGeminiLiveActive && !show3DArtifactsDialog
+                                if (canMountMainAvatar) {
+                                    RamsesAvatar3DView(
+                                        modifier = Modifier.fillMaxSize(),
+                                        isSpeaking = isSpeaking,
+                                        isListening = isVoiceTyping,
+                                        isThinking = isLoading,
+                                        rmsDb = liveRmsDb,
+                                        appLanguage = appLanguage,
+                                        rigConfig = avatarRigConfig,
+                                        onStopSpeaking = { viewModel.stopSpeaking() },
+                                        onToggleAutoSpeak = { viewModel.toggleAutoSpeak() },
+                                        isAutoSpeakEnabled = isAutoSpeakEnabled,
+                                        showBackgroundGradient = false,
+                                        pureBlackBackground = true,
+                                        sceneSlot = "main",
+                                        verticalOffset = -0.10f
+                                    )
+                                } else {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .background(Color.Black)
+                                    )
+                                }
                             }
 
-                            // 2. BOTTOM HALF OF SCREEN (48% height): Text conversation, recent speech, prompt suggestions
+                            // 2. EXPANDED MESSAGES AREA (~66% height): Starts higher up on pure black so more messages fit
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .weight(0.92f)
-                                    .background(Color(0x59040711))
+                                    .weight(1.18f)
+                                    .background(Color.Black)
                             ) {
                                 Column(modifier = Modifier.fillMaxSize()) {
-                                    // Compact Mode Switcher Bar at top of bottom half
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(horizontal = 14.dp, vertical = 6.dp),
-                                        horizontalArrangement = Arrangement.End,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-
-                                        // Auto-Speech Status Toggle
-                                        Row(
-                                            modifier = Modifier
-                                                .clip(RoundedCornerShape(14.dp))
-                                                .background(if (isAutoSpeakEnabled) Color(0x2210B981) else Color(0x22FFFFFF))
-                                                .border(
-                                                    1.dp,
-                                                    if (isAutoSpeakEnabled) Color(0xFF10B981).copy(alpha = 0.5f) else Color.White.copy(alpha = 0.15f),
-                                                    RoundedCornerShape(14.dp)
-                                                )
-                                                .clickable { viewModel.toggleAutoSpeak() }
-                                                .padding(horizontal = 8.dp, vertical = 4.dp),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Icon(
-                                                imageVector = if (isAutoSpeakEnabled) Icons.AutoMirrored.Filled.VolumeUp else Icons.AutoMirrored.Filled.VolumeOff,
-                                                contentDescription = null,
-                                                tint = if (isAutoSpeakEnabled) Color(0xFF10B981) else Color.White.copy(alpha = 0.45f),
-                                                modifier = Modifier.size(13.dp)
-                                            )
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Text(
-                                                text = if (appLanguage == AppLanguage.ARABIC) {
-                                                    if (isAutoSpeakEnabled) "النطق تلقائي" else "النطق صامت"
-                                                } else {
-                                                    if (isAutoSpeakEnabled) "Auto-Speak ON" else "Muted"
-                                                },
-                                                fontSize = 10.sp,
-                                                color = if (isAutoSpeakEnabled) Color(0xFF10B981) else Color.White.copy(alpha = 0.55f),
-                                                fontFamily = AmiriFontFamily
-                                            )
-                                        }
-                                    }
-
-                                    // Conversation Area inside the bottom half
+                                    // Conversation Area inside the taller bottom container
                                     if (messages.isEmpty() && streamingMessage == null) {
                                         Column(
                                             modifier = Modifier
                                                 .fillMaxSize()
                                                 .verticalScroll(rememberScrollState())
-                                                .padding(horizontal = 14.dp, vertical = 6.dp),
+                                                .padding(horizontal = 14.dp, vertical = 4.dp),
                                             horizontalAlignment = Alignment.CenterHorizontally,
-                                            verticalArrangement = Arrangement.Center
+                                            verticalArrangement = Arrangement.Top
                                         ) {
                                             Text(
                                                 text = if (appLanguage == AppLanguage.ARABIC) "تحدث أو اكتب لرمسيس لتشاهد حركته الملكية ونطق الشفاه:" else "Ask Rameses anything to see his royal gestures and speech:",
@@ -510,7 +522,7 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                                                 textAlign = TextAlign.Center
                                             )
 
-                                            Spacer(modifier = Modifier.height(8.dp))
+                                            Spacer(modifier = Modifier.height(6.dp))
 
                                             val quickPrompts = if (appLanguage == AppLanguage.ARABIC) {
                                                 listOf(
@@ -537,10 +549,10 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                                                         modifier = Modifier
                                                             .fillMaxWidth()
                                                             .clip(RoundedCornerShape(12.dp))
-                                                            .background(Color(0x331E293B))
+                                                            .background(Color(0xFF0D0F14))
                                                             .border(0.8.dp, RoyalGold.copy(alpha = 0.35f), RoundedCornerShape(12.dp))
                                                             .clickable { viewModel.sendMessage(prompt) }
-                                                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                                                            .padding(horizontal = 12.dp, vertical = 7.dp)
                                                     ) {
                                                         Text(
                                                             text = prompt,
@@ -554,15 +566,24 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                                         }
                                     } else {
                                         val allDisplayedMessages = remember(messages, streamingMessage) {
-                                            if (streamingMessage != null) messages + streamingMessage!! else messages
+                                            val streamMsg = streamingMessage
+                                            val combined = if (
+                                                streamMsg != null &&
+                                                messages.none { it.id == streamMsg.id || "streaming_${it.id}" == streamMsg.id }
+                                            ) {
+                                                messages + streamMsg
+                                            } else {
+                                                messages
+                                            }
+                                            combined.distinctBy { it.id }
                                         }
 
                                         LazyColumn(
-                                            state = listState,
+                                            state = splitListState,
                                             modifier = Modifier
                                                 .fillMaxSize()
                                                 .padding(horizontal = 12.dp),
-                                            contentPadding = PaddingValues(top = 4.dp, bottom = 8.dp),
+                                            contentPadding = PaddingValues(top = 2.dp, bottom = 8.dp),
                                             verticalArrangement = Arrangement.spacedBy(8.dp)
                                         ) {
                                             items(allDisplayedMessages, key = { it.id }) { message ->
@@ -642,8 +663,14 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                                         onClick = {
                                             autoFollowStream = true
                                             coroutineScope.launch {
-                                                val lastIdx = (listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0)
-                                                listState.animateScrollToItem(lastIdx)
+                                                val total = splitListState.layoutInfo.totalItemsCount
+                                                if (total > 0) {
+                                                    try {
+                                                        splitListState.animateScrollToItem((total - 1).coerceAtLeast(0))
+                                                    } catch (e: kotlinx.coroutines.CancellationException) {
+                                                        throw e
+                                                    } catch (_: Exception) {}
+                                                }
                                             }
                                         },
                                         shape = CircleShape,
@@ -776,45 +803,25 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                                         }
                                     }
 
-                                    Spacer(modifier = Modifier.height(14.dp))
-
-                                    // 1.5 Million Tokens Quota Status Pill
-                                    Row(
-                                        modifier = Modifier
-                                            .clip(RoundedCornerShape(14.dp))
-                                            .background(Color(0x1F4285F4))
-                                            .border(0.8.dp, Color(0x404285F4), RoundedCornerShape(14.dp))
-                                            .clickable { showApiKeyDialog = true }
-                                            .padding(horizontal = 12.dp, vertical = 6.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Key,
-                                            contentDescription = null,
-                                            tint = Color(0xFF8AB4F8),
-                                            modifier = Modifier.size(14.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text(
-                                            text = if (customApiKey.isNotBlank()) {
-                                                if (appLanguage == AppLanguage.ARABIC) "مفتاح AI Studio الشخصي نشط (1.5M Token)" else "Personal AI Studio Key Active (1.5M Tokens)"
-                                            } else {
-                                                if (appLanguage == AppLanguage.ARABIC) "استجابة لحظية فائقة السرعة • Gemini 3.1 Flash Lite" else "Sub-Second Speed • Gemini 3.1 Flash Lite"
-                                            },
-                                            fontFamily = AmiriFontFamily,
-                                            fontSize = 11.sp,
-                                            color = Color(0xFF8AB4F8)
-                                        )
-                                    }
+                                    Spacer(modifier = Modifier.height(8.dp))
                                 }
                             } else {
                                 val allDisplayedMessages = remember(messages, streamingMessage) {
-                                    if (streamingMessage != null) messages + streamingMessage!! else messages
+                                    val streamMsg = streamingMessage
+                                    val combined = if (
+                                        streamMsg != null &&
+                                        messages.none { it.id == streamMsg.id || "streaming_${it.id}" == streamMsg.id }
+                                    ) {
+                                        messages + streamMsg
+                                    } else {
+                                        messages
+                                    }
+                                    combined.distinctBy { it.id }
                                 }
 
                                 Box(modifier = Modifier.fillMaxSize()) {
                                     LazyColumn(
-                                        state = listState,
+                                        state = fullListState,
                                         modifier = Modifier
                                             .fillMaxSize()
                                             .padding(horizontal = 16.dp),
@@ -896,8 +903,14 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                                             onClick = {
                                                 autoFollowStream = true
                                                 coroutineScope.launch {
-                                                    val lastIdx = (listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0)
-                                                    listState.animateScrollToItem(lastIdx)
+                                                    val total = fullListState.layoutInfo.totalItemsCount
+                                                    if (total > 0) {
+                                                        try {
+                                                            fullListState.animateScrollToItem((total - 1).coerceAtLeast(0))
+                                                        } catch (e: kotlinx.coroutines.CancellationException) {
+                                                            throw e
+                                                        } catch (_: Exception) {}
+                                                    }
                                                 }
                                             },
                                             shape = CircleShape,
@@ -919,8 +932,21 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                     }
                 }
             }
+                }
+            }
 
-            // Real Full-Duplex Gemini Live Voice Screen (BidiGenerateContent WebSocket)
+            // Full-Screen 3D Ancient Egyptian Relics Gallery Overlay (SceneView) - Above Drawer & Scaffold
+            if (show3DArtifactsDialog) {
+                Ramses3DArtifactDialog(
+                    appLanguage = appLanguage,
+                    onDismissRequest = { show3DArtifactsDialog = false },
+                    onAskRamses = { prompt ->
+                        viewModel.sendMessage(prompt)
+                    }
+                )
+            }
+
+            // Full-Screen Full-Duplex Gemini Live Voice Overlay - Above Drawer & Scaffold
             if (isGeminiLiveActive) {
                 val liveSpeech = liveModelSpeechTranscript.takeIf { it.isNotBlank() }
                     ?: streamingMessage?.text?.takeIf { it.isNotBlank() }
@@ -934,6 +960,7 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                     rmsDb = liveRmsDb,
                     appLanguage = appLanguage,
                     rigConfig = avatarRigConfig,
+                    selectedGem = selectedGem,
                     isNativeLiveConnected = liveConnectionStatus == GeminiLiveWebSocketClient.LiveConnectionStatus.CONNECTED,
                     isConnectingLive = liveConnectionStatus == GeminiLiveWebSocketClient.LiveConnectionStatus.CONNECTING,
                     isMicMuted = isLiveMicMuted,
@@ -949,10 +976,11 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                 )
             }
 
-            // Google and Apple Sign-in Dialog
+            // Google Sign-In & Profile Account Dialog
             if (showAuthDialog) {
                 AuthSignInDialog(
                     userProfile = userProfile,
+                    hasPersonalApiKey = customApiKey.isNotBlank(),
                     onSignInWithGoogle = { email, name ->
                         viewModel.signInWithGoogle(email, name)
                     },
@@ -977,23 +1005,31 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                                 }
                             }
                         }
+                    },
+                    onOpenApiKeyDialog = { showApiKeyDialog = true },
+                    onUpdateLocalProfile = { name, uri ->
+                        viewModel.updateLocalUserProfile(name, uri)
                     }
                 )
             }
 
-            // Dedicated API Key Management Dialog (1.5M Token Context per User)
+            // Dedicated API Key & Profile Photo Management Dialog
             if (showApiKeyDialog) {
                 ApiKeyManagementDialog(
                     currentApiKey = customApiKey,
+                    userProfile = userProfile,
                     onSaveApiKey = { newKey ->
                         viewModel.setCustomApiKey(newKey)
+                    },
+                    onUpdateLocalProfile = { name, uri ->
+                        viewModel.updateLocalUserProfile(name, uri)
                     },
                     onDismiss = { showApiKeyDialog = false },
                     appLanguage = appLanguage
                 )
             }
 
-            // RAG Knowledge Dialog (Dedicated section to supply information/documents to Ramses)
+            // RAG Knowledge Dialog
             if (showRagDialog) {
                 RagKnowledgeDialog(
                     documents = ragDocuments,
@@ -1036,29 +1072,6 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                     },
                     onLoadFolderChunks = { folderId, callback ->
                         viewModel.loadChunksForFolderPreview(folderId, callback)
-                    }
-                )
-            }
-
-            // 3D Rigging Studio & Custom .GLB File Importer Dialog
-            if (showRigStudioDialog) {
-                RiggingStudioDialog(
-                    initialConfig = avatarRigConfig,
-                    appLanguage = appLanguage,
-                    onSaveConfig = { updatedRig ->
-                        viewModel.saveAvatarRigConfig(updatedRig)
-                    },
-                    onDismiss = { showRigStudioDialog = false }
-                )
-            }
-
-            // 3D Ancient Egyptian Relics Gallery Dialog (SceneView)
-            if (show3DArtifactsDialog) {
-                Ramses3DArtifactDialog(
-                    appLanguage = appLanguage,
-                    onDismissRequest = { show3DArtifactsDialog = false },
-                    onAskRamses = { prompt ->
-                        viewModel.sendMessage(prompt)
                     }
                 )
             }
@@ -1152,7 +1165,7 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                                     }
                                     Spacer(modifier = Modifier.height(4.dp))
                                     Text(
-                                        text = if (appLanguage == AppLanguage.ARABIC) "أسرع استجابة لحظية للمحادثات اليومية والطقس والمكالمات الصوتية المباشرة." else "Fastest sub-second responses for daily chats, weather, and live stream voice calls.",
+                                        text = if (appLanguage == AppLanguage.ARABIC) "أسرع استجابة لحظية للمحادثات اليومية والبرمجة والمكالمات الصوتية المباشرة." else "Fastest sub-second responses for daily chats, coding, and live stream voice calls.",
                                         fontFamily = AmiriFontFamily,
                                         fontSize = 12.sp,
                                         color = TextSecondary,
@@ -1211,7 +1224,30 @@ fun RamsesApp(viewModel: RamsesViewModel) {
                     }
                 }
             }
+
+            // Full-Screen Pure Black Enlarged Opening Logo Splash
+            AnimatedVisibility(
+                visible = showOpeningSplash,
+                enter = fadeIn(animationSpec = tween(150)),
+                exit = fadeOut(animationSpec = tween(320))
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black)
+                        .testTag("opening_logo_splash"),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Image(
+                        painter = painterResource(id = R.drawable.ramses_user_photo),
+                        contentDescription = stringResource(R.string.app_name),
+                        modifier = Modifier
+                            .size(285.dp)
+                            .clip(RoundedCornerShape(36.dp)),
+                        contentScale = ContentScale.Fit
+                    )
+                }
+            }
         }
     }
-}
 }

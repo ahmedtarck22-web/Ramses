@@ -28,6 +28,7 @@ class SpeechRecognizerHelper(private val context: Context) {
     val rmsDb: StateFlow<Float> = _rmsDb.asStateFlow()
 
     var onSpeechCompleted: ((String) -> Unit)? = null
+    var onPartialSpeech: ((String) -> Unit)? = null
     var onErrorOccurred: ((String, Int) -> Unit)? = null
     var onEndOfSpeechDetected: (() -> Unit)? = null
 
@@ -81,18 +82,23 @@ class SpeechRecognizerHelper(private val context: Context) {
                     override fun onResults(results: Bundle?) {
                         _isListening.value = false
                         val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                        val spokenText = matches?.firstOrNull() ?: ""
+                        val spokenText = matches?.firstOrNull()?.trim() ?: ""
                         if (spokenText.isNotBlank()) {
                             _recognizedText.value = spokenText
                             mainHandler.post { onSpeechCompleted?.invoke(spokenText) }
+                        } else {
+                            mainHandler.post {
+                                onErrorOccurred?.invoke("No speech recognized", SpeechRecognizer.ERROR_NO_MATCH)
+                            }
                         }
                     }
 
                     override fun onPartialResults(partialResults: Bundle?) {
                         val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                        val text = matches?.firstOrNull() ?: ""
+                        val text = matches?.firstOrNull()?.trim() ?: ""
                         if (text.isNotBlank()) {
                             _recognizedText.value = text
+                            mainHandler.post { onPartialSpeech?.invoke(text) }
                         }
                     }
 

@@ -64,7 +64,7 @@ android {
     compose = true
     buildConfig = true
   }
-  androidResources { noCompress += "pack" }
+  androidResources { noCompress += listOf("pack", "glb", "gltf", "bin", "ktx") }
   testOptions { unitTests { isIncludeAndroidResources = true } }
   dependenciesInfo {
     includeInApk = false
@@ -115,7 +115,7 @@ dependencies {
   // implementation(libs.androidx.navigation.compose)
   implementation(libs.androidx.room.ktx)
   implementation(libs.androidx.room.runtime)
-  // implementation(libs.coil.compose)
+  implementation(libs.coil.compose)
   // implementation(libs.converter.moshi)
   implementation(libs.firebase.ai)
   implementation(libs.firebase.firestore)

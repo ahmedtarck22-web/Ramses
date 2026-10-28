@@ -10,6 +10,9 @@ import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.NoiseSuppressor
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.util.Base64
 import android.util.Log
@@ -17,7 +20,23 @@ import com.example.BuildConfig
 import com.example.data.model.AppLanguage
 import com.example.data.model.RagDocument
 import com.example.data.model.VoiceCallState
+import com.example.firebase.ensureFirebaseInitialized
 import com.example.security.SecureKeyStoreHelper
+import com.google.firebase.Firebase
+import com.google.firebase.ai.ai
+import com.google.firebase.ai.type.AudioTranscriptionConfig
+import com.google.firebase.ai.type.GenerativeBackend
+import com.google.firebase.ai.type.InlineData
+import com.google.firebase.ai.type.InlineDataPart
+import com.google.firebase.ai.type.LiveServerContent
+import com.google.firebase.ai.type.LiveSession
+import com.google.firebase.ai.type.PublicPreviewAPI
+import com.google.firebase.ai.type.ResponseModality
+import com.google.firebase.ai.type.SpeechConfig
+import com.google.firebase.ai.type.Voice
+import com.google.firebase.ai.type.content
+import com.google.firebase.ai.type.liveGenerationConfig
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -29,6 +48,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -47,14 +67,12 @@ import kotlin.math.log10
 import kotlin.math.sqrt
 
 /**
- * Real Full-Duplex Gemini Live WebSocket Engine (BidiGenerateContent) with Dual-Layer Acoustic Echo Guard.
- *
- * Streams raw 16kHz 16-bit mono PCM microphone audio to Gemini Live and plays back native 24kHz
- * 16-bit mono PCM AI voice audio in real time. Combines hardware DSP Acoustic Echo Cancellation
- * (`MODE_IN_COMMUNICATION` + `USAGE_VOICE_COMMUNICATION` + `AcousticEchoCanceler`) with software
- * silence-gating while AI speech is playing + 550ms acoustic reverb tail cooldown so the phone's
- * microphone never hears or interrupts Ramses's own voice from the loudspeaker.
+ * Real Full-Duplex Gemini Live Voice Engine with 3-Tier Connectivity & Acoustic Echo Guard:
+ * 1. Direct `BidiGenerateContent` WebSocket when a personal Gemini API key is configured.
+ * 2. Provisioned Firebase AI Logic `LiveGenerativeModel` 24kHz native audio when no personal API key is set.
+ * 3. Automatic Main-thread fallback to local `SpeechRecognizer` + `GeminiApiClient` + `TextToSpeech` if live streaming is unavailable.
  */
+@OptIn(PublicPreviewAPI::class)
 class GeminiLiveWebSocketClient(
     private val appContext: Context? = null
 ) {
@@ -78,21 +96,96 @@ class GeminiLiveWebSocketClient(
         const val ECHO_TAIL_COOLDOWN_MS = 550L
 
         val LIVE_CANDIDATE_MODELS = listOf(
+            "models/gemini-2.5-flash-native-audio-latest",
+            "models/gemini-2.5-flash-native-audio-preview-12-2025",
+            "models/gemini-2.5-flash-native-audio-preview-09-2025",
             "models/gemini-3.1-flash-live-preview",
-            "models/gemini-3.8-live",
-            "models/gemini-2.5-flash-native-audio-latest"
+            "models/gemini-2.0-flash-live-001"
         )
+
+        val FIREBASE_LIVE_MODELS = listOf(
+            "gemini-2.5-flash-native-audio-preview-12-2025",
+            "gemini-2.5-flash-native-audio-preview-09-2025",
+            "gemini-2.0-flash-live-preview-04-09"
+        )
+
+        fun sanitizeApiKey(raw: String?): String {
+            if (raw.isNullOrBlank()) return ""
+            return raw.filter { it.code in 0x21..0x7E }
+        }
+
+        fun stripHiddenVoiceTokens(raw: String): String {
+            if (raw.isEmpty()) return ""
+            return raw
+                .replace(Regex("(?is)<thought>.*?</thought>"), "")
+                .replace(Regex("(?is)<thinking>.*?</thinking>"), "")
+                .replace(Regex("(?is)<thought>.*$"), "")
+                .replace(Regex("<\\|[^|>]*\\|>"), "")
+                .replace(Regex("(?i)\\[(audio_token|audio|thought|thinking|hidden_token)\\]"), "")
+        }
+
+        /**
+         * Formats a valid `BidiGenerateContent` client text turn (`clientContent`).
+         * Sending `{"realtimeInput":{"text":...}}` causes v1beta WebSocket servers to close with 1007.
+         */
+        fun buildClientTextPayload(trimmedText: String): String {
+            return JSONObject().apply {
+                put("clientContent", JSONObject().apply {
+                    put(
+                        "turns",
+                        JSONArray().put(
+                            JSONObject().apply {
+                                put("role", "user")
+                                put("parts", JSONArray().put(JSONObject().put("text", trimmedText)))
+                            }
+                        )
+                    )
+                    put("turnComplete", true)
+                })
+            }.toString()
+        }
+
+        /**
+         * Formats a standard 16kHz PCM `realtimeInput.mediaChunks` frame accepted across all v1beta Live models.
+         */
+        fun buildRealtimeAudioPayload(base64Pcm: String): String {
+            return JSONObject().apply {
+                put("realtimeInput", JSONObject().apply {
+                    put(
+                        "mediaChunks",
+                        JSONArray().put(
+                            JSONObject().apply {
+                                put("mimeType", "audio/pcm;rate=16000")
+                                put("data", base64Pcm)
+                            }
+                        )
+                    )
+                })
+            }.toString()
+        }
+
+        private fun isRobolectricRuntime(): Boolean {
+            return Build.FINGERPRINT.equals("robolectric", ignoreCase = true) ||
+                runCatching {
+                    Class.forName("org.robolectric.Robolectric")
+                    true
+                }.getOrDefault(false)
+        }
     }
+
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     private val wsOkHttpClient = OkHttpClient.Builder()
         .connectTimeout(8, TimeUnit.SECONDS)
-        .readTimeout(0, TimeUnit.MILLISECONDS) // Keep open indefinitely for WebSocket streaming
+        .readTimeout(0, TimeUnit.MILLISECONDS)
         .pingInterval(15, TimeUnit.SECONDS)
         .build()
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private var webSocket: WebSocket? = null
+    private var firebaseLiveSession: LiveSession? = null
+    private var firebaseConnectAndReceiveJob: Job? = null
     private var micCaptureJob: Job? = null
     private var audioPlaybackJob: Job? = null
     private var audioRecord: AudioRecord? = null
@@ -106,6 +199,7 @@ class GeminiLiveWebSocketClient(
     private var pcmPlaybackChannel = Channel<Pair<Int, ByteArray>>(Channel.UNLIMITED)
     private val playbackGeneration = AtomicInteger(0)
     private val isSetupComplete = AtomicBoolean(false)
+    private val hasReceivedModelResponse = AtomicBoolean(false)
     private val isSessionActive = AtomicBoolean(false)
     private val isModelTurnComplete = AtomicBoolean(true)
 
@@ -150,10 +244,6 @@ class GeminiLiveWebSocketClient(
     var onTurnCompleted: ((userText: String, modelText: String) -> Unit)? = null
     var onFallbackRequired: ((reason: String) -> Unit)? = null
 
-    /**
-     * Returns true while AI audio is actively playing through the loudspeaker OR during the
-     * post-playback acoustic echo decay window.
-     */
     fun isEchoGateActive(nowElapsedMs: Long = SystemClock.elapsedRealtime()): Boolean {
         return isAiAudioPlaying.get() || nowElapsedMs < echoTailUntilElapsedMs.get()
     }
@@ -164,46 +254,74 @@ class GeminiLiveWebSocketClient(
     }
 
     fun resolveApiKey(customApiKey: String?): String {
-        return when {
-            !customApiKey.isNullOrBlank() -> customApiKey.trim()
-            BuildConfig.GEMINI_API_KEY.isNotBlank() && BuildConfig.GEMINI_API_KEY != "MY_GEMINI_API_KEY" ->
-                BuildConfig.GEMINI_API_KEY.trim()
-            else -> ""
+        val cleanedCustom = sanitizeApiKey(customApiKey)
+        if (cleanedCustom.isNotBlank()) return cleanedCustom
+        val cleanedBuild = sanitizeApiKey(BuildConfig.GEMINI_API_KEY)
+        return if (cleanedBuild.isNotBlank() && cleanedBuild != "MY_GEMINI_API_KEY") {
+            cleanedBuild
+        } else {
+            ""
+        }
+    }
+
+    private fun triggerFallbackOnMain(reason: String) {
+        if (!isSessionActive.get()) return
+        isSessionActive.set(false)
+        isSetupComplete.set(false)
+        micCaptureJob?.cancel()
+        micCaptureJob = null
+        audioPlaybackJob?.cancel()
+        audioPlaybackJob = null
+        restoreAudioMode()
+        _liveRmsDb.value = 0f
+        _connectionStatus.value = LiveConnectionStatus.FALLBACK_LOCAL
+        mainHandler.post {
+            onFallbackRequired?.invoke(reason)
         }
     }
 
     @Suppress("DEPRECATION")
     private fun enterVoiceCommunicationAudioMode() {
-        val am = appContext?.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
-        try {
-            if (savedAudioMode == null) {
-                savedAudioMode = am.mode
-                savedSpeakerphoneOn = am.isSpeakerphoneOn
+        val ctx = appContext ?: return
+        scope.launch {
+            val am = runCatching { ctx.getSystemService(Context.AUDIO_SERVICE) as? AudioManager }.getOrNull() ?: return@launch
+            try {
+                if (savedAudioMode == null) {
+                    savedAudioMode = am.mode
+                    savedSpeakerphoneOn = am.isSpeakerphoneOn
+                }
+                am.mode = AudioManager.MODE_IN_COMMUNICATION
+                am.isSpeakerphoneOn = true
+            } catch (t: Throwable) {
+                Log.w(TAG, "Could not configure AudioManager communication mode: ${t.message}")
             }
-            am.mode = AudioManager.MODE_IN_COMMUNICATION
-            am.isSpeakerphoneOn = true
-        } catch (e: Exception) {
-            Log.w(TAG, "Could not configure AudioManager communication mode: ${e.message}")
         }
     }
 
     @Suppress("DEPRECATION")
     private fun restoreAudioMode() {
-        val am = appContext?.getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
-        try {
-            savedSpeakerphoneOn?.let { am.isSpeakerphoneOn = it }
-            savedAudioMode?.let { am.mode = it }
-        } catch (e: Exception) {
-            Log.w(TAG, "Could not restore AudioManager mode: ${e.message}")
-        } finally {
-            savedAudioMode = null
-            savedSpeakerphoneOn = null
+        val ctx = appContext ?: return
+        val prevMode = savedAudioMode
+        val prevSpeaker = savedSpeakerphoneOn
+        savedAudioMode = null
+        savedSpeakerphoneOn = null
+        if (prevMode == null && prevSpeaker == null) return
+        scope.launch {
+            val am = runCatching { ctx.getSystemService(Context.AUDIO_SERVICE) as? AudioManager }.getOrNull() ?: return@launch
+            try {
+                prevSpeaker?.let { am.isSpeakerphoneOn = it }
+                prevMode?.let { am.mode = it }
+            } catch (t: Throwable) {
+                Log.w(TAG, "Could not restore AudioManager mode: ${t.message}")
+            }
         }
     }
 
     /**
-     * Starts a real bidirectional Gemini Live WebSocket session.
-     * Returns true if WebSocket connection is initiated, or false if API key is missing.
+     * Starts a real bidirectional Gemini Live session:
+     * - Uses direct WebSocket if an API key is present;
+     * - Otherwise uses Firebase AI Logic `LiveGenerativeModel` on real devices;
+     * - Returns false immediately in headless JVM/Robolectric tests without an API key.
      */
     fun startSession(
         customApiKey: String?,
@@ -214,7 +332,7 @@ class GeminiLiveWebSocketClient(
         stopSession()
 
         val key = resolveApiKey(customApiKey)
-        if (key.isBlank()) {
+        if (key.isBlank() && (appContext == null || isRobolectricRuntime())) {
             _connectionStatus.value = LiveConnectionStatus.FALLBACK_LOCAL
             return false
         }
@@ -227,6 +345,7 @@ class GeminiLiveWebSocketClient(
 
         isSessionActive.set(true)
         isSetupComplete.set(false)
+        hasReceivedModelResponse.set(false)
         isAiAudioPlaying.set(false)
         echoTailUntilElapsedMs.set(0L)
         _isMicMuted.value = false
@@ -237,17 +356,179 @@ class GeminiLiveWebSocketClient(
         modelTranscriptBuffer.setLength(0)
 
         enterVoiceCommunicationAudioMode()
-        connectWithModelIndex(0)
+
+        if (key.isNotBlank()) {
+            connectWithModelIndex(0)
+        } else {
+            startFirebaseAiLiveSession()
+        }
         return true
+    }
+
+    private fun startFirebaseAiLiveSession() {
+        val ctx = appContext
+        if (ctx == null || !isSessionActive.get()) {
+            triggerFallbackOnMain("Application context unavailable for Firebase AI Live")
+            return
+        }
+
+        _connectionStatus.value = LiveConnectionStatus.CONNECTING
+        _voiceState.value = VoiceCallState.THINKING
+
+        firebaseConnectAndReceiveJob?.cancel()
+        firebaseConnectAndReceiveJob = scope.launch {
+            runCatching { ensureFirebaseInitialized(ctx) }
+            val voiceName = if (currentGemPersona == "GEMINI_DEFAULT") "Puck" else "Charon"
+            val sysText = buildLiveSystemInstruction()
+
+            var connectedSession: LiveSession? = null
+            var connectedModel = ""
+
+            for (modelName in FIREBASE_LIVE_MODELS) {
+                if (!isActive || !isSessionActive.get()) return@launch
+                try {
+                    _activeLiveModelName.value = modelName
+                    val liveModel = Firebase.ai(backend = GenerativeBackend.googleAI()).liveModel(
+                        modelName = modelName,
+                        generationConfig = liveGenerationConfig {
+                            responseModality = ResponseModality.AUDIO
+                            speechConfig = SpeechConfig(Voice(voiceName))
+                            inputAudioTranscription = AudioTranscriptionConfig()
+                            outputAudioTranscription = AudioTranscriptionConfig()
+                        },
+                        systemInstruction = content { text(sysText) }
+                    )
+                    connectedSession = withTimeout(7500L) {
+                        liveModel.connect()
+                    }
+                    connectedModel = modelName
+                    break
+                } catch (e: CancellationException) {
+                    if (!isSessionActive.get()) throw e
+                    Log.w(TAG, "Firebase Live connect timeout on $modelName")
+                } catch (t: Throwable) {
+                    Log.w(TAG, "Firebase Live model $modelName unavailable: ${t.message}")
+                }
+            }
+
+            if (connectedSession == null || !isSessionActive.get()) {
+                triggerFallbackOnMain("Firebase AI Live models unavailable; switching to local voice loop")
+                return@launch
+            }
+
+            Log.d(TAG, "Connected Firebase AI Live session on $connectedModel")
+            firebaseLiveSession = connectedSession
+            isSetupComplete.set(true)
+            _connectionStatus.value = LiveConnectionStatus.CONNECTED
+            _voiceState.value = VoiceCallState.LISTENING
+
+            startAudioPlaybackLoop()
+            startMicrophoneStreamingLoop()
+
+            // Trigger natural opening greeting
+            runCatching {
+                echoTailUntilElapsedMs.set(SystemClock.elapsedRealtime() + 450L)
+                _voiceState.value = VoiceCallState.THINKING
+                connectedSession.send(buildInitialGreetingPrompt())
+            }.onFailure { err ->
+                Log.w(TAG, "Initial greeting send notice: ${err.message}")
+                _voiceState.value = VoiceCallState.LISTENING
+            }
+
+            try {
+                connectedSession.receive().collect { serverMsg ->
+                    if (!isSessionActive.get()) return@collect
+                    if (serverMsg is LiveServerContent) {
+                        handleFirebaseLiveContent(serverMsg)
+                    }
+                }
+                if (isSessionActive.get() && !hasReceivedModelResponse.get()) {
+                    triggerFallbackOnMain("Firebase Live stream ended before first response")
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (t: Throwable) {
+                Log.w(TAG, "Firebase Live receive stream ended: ${t.message}")
+                if (isSessionActive.get() && !hasReceivedModelResponse.get()) {
+                    triggerFallbackOnMain(t.localizedMessage ?: "Firebase Live stream interrupted")
+                }
+            }
+        }
+    }
+
+    private fun handleFirebaseLiveContent(serverContent: LiveServerContent) {
+        if (!isSessionActive.get()) return
+
+        if (serverContent.interrupted) {
+            if (isEchoGateActive()) return
+            flushAudioPlayback()
+            _voiceState.value = VoiceCallState.LISTENING
+            return
+        }
+
+        val inText = serverContent.inputTranscription?.text.orEmpty()
+        if (inText.isNotEmpty() && !isEchoGateActive()) {
+            val chunk = stripHiddenVoiceTokens(inText)
+            if (chunk.isNotEmpty()) {
+                if (isModelTurnComplete.get() && modelTranscriptBuffer.isNotEmpty()) {
+                    modelTranscriptBuffer.setLength(0)
+                }
+                userTranscriptBuffer.append(chunk)
+                _liveUserTranscript.value = stripHiddenVoiceTokens(userTranscriptBuffer.toString()).trim()
+            }
+        }
+
+        val outText = serverContent.outputTranscription?.text.orEmpty()
+        if (outText.isNotEmpty()) {
+            hasReceivedModelResponse.set(true)
+            isModelTurnComplete.set(false)
+            if (!_isSpeakerMuted.value) {
+                isAiAudioPlaying.set(true)
+            }
+            modelTranscriptBuffer.append(outText)
+            _liveModelTranscript.value = stripHiddenVoiceTokens(modelTranscriptBuffer.toString()).trim()
+        }
+
+        val parts = serverContent.content?.parts.orEmpty()
+        if (parts.isNotEmpty()) {
+            val gen = playbackGeneration.get()
+            for (part in parts) {
+                if (part is InlineDataPart && !part.isThought) {
+                    val pcmBytes = part.inlineData
+                    if (part.mimeType.startsWith("audio/pcm") && pcmBytes.isNotEmpty()) {
+                        hasReceivedModelResponse.set(true)
+                        isModelTurnComplete.set(false)
+                        if (!_isSpeakerMuted.value) {
+                            isAiAudioPlaying.set(true)
+                            _voiceState.value = VoiceCallState.SPEAKING
+                            pcmPlaybackChannel.trySend(gen to pcmBytes)
+                        }
+                    }
+                }
+            }
+        }
+
+        if (serverContent.turnComplete) {
+            isModelTurnComplete.set(true)
+            val finalUser = stripHiddenVoiceTokens(userTranscriptBuffer.toString()).trim()
+            val finalModel = stripHiddenVoiceTokens(modelTranscriptBuffer.toString()).trim()
+            if (finalUser.isNotEmpty() || finalModel.isNotEmpty()) {
+                onTurnCompleted?.invoke(finalUser, finalModel)
+            }
+            userTranscriptBuffer.setLength(0)
+            pcmPlaybackChannel.trySend(playbackGeneration.get() to ByteArray(0))
+        }
     }
 
     private fun connectWithModelIndex(index: Int) {
         if (!isSessionActive.get()) return
         if (index >= LIVE_CANDIDATE_MODELS.size) {
-            Log.e(TAG, "All Gemini Live models exhausted; triggering fallback")
-            restoreAudioMode()
-            _connectionStatus.value = LiveConnectionStatus.FALLBACK_LOCAL
-            onFallbackRequired?.invoke("All live models unavailable")
+            Log.w(TAG, "Direct WebSocket Live models exhausted; trying Firebase AI Live or local fallback")
+            if (appContext != null && !isRobolectricRuntime()) {
+                startFirebaseAiLiveSession()
+            } else {
+                triggerFallbackOnMain("All live models unavailable")
+            }
             return
         }
 
@@ -258,88 +539,137 @@ class GeminiLiveWebSocketClient(
         _voiceState.value = VoiceCallState.THINKING
         isSetupComplete.set(false)
 
-        val request = Request.Builder()
-            .url(WS_ENDPOINT)
-            .addHeader("x-goog-api-key", currentApiKey)
-            .build()
+        val request = try {
+            Request.Builder()
+                .url(WS_ENDPOINT)
+                .addHeader("x-goog-api-key", currentApiKey)
+                .build()
+        } catch (t: Throwable) {
+            val safeErr = SecureKeyStoreHelper.redactSecret(t.message, currentApiKey)
+            Log.e(TAG, "Failed to build Gemini Live WebSocket request: $safeErr")
+            triggerFallbackOnMain("Invalid API key format or network configuration")
+            return
+        }
 
-        webSocket = wsOkHttpClient.newWebSocket(request, object : WebSocketListener() {
-            override fun onOpen(webSocket: WebSocket, response: Response) {
-                if (!isSessionActive.get()) {
-                    webSocket.close(1000, "Session closed")
-                    return
-                }
-                Log.d(TAG, "Gemini Live WebSocket opened with model $modelId")
-                sendSetupMessage(webSocket, modelId)
-            }
-
-            override fun onMessage(webSocket: WebSocket, text: String) {
-                handleServerFrame(text)
-            }
-
-            override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-                // CRITICAL: BidiGenerateContent sends JSON payloads inside binary WebSocket frames (opcode 2)
-                handleServerFrame(bytes.utf8())
-            }
-
-            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-                val safeReason = SecureKeyStoreHelper.redactSecret(reason, currentApiKey)
-                Log.w(TAG, "WebSocket closing ($code): $safeReason")
-                webSocket.close(code, reason)
-            }
-
-            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                val safeReason = SecureKeyStoreHelper.redactSecret(reason, currentApiKey)
-                Log.w(TAG, "WebSocket closed ($code): $safeReason")
-                if (isSessionActive.get() && !isSetupComplete.get()) {
-                    scope.launch {
-                        connectWithModelIndex(index + 1)
+        try {
+            webSocket = wsOkHttpClient.newWebSocket(request, object : WebSocketListener() {
+                override fun onOpen(webSocket: WebSocket, response: Response) {
+                    if (!isSessionActive.get()) {
+                        runCatching { webSocket.close(1000, "Session closed") }
+                        return
                     }
-                } else if (isSessionActive.get() && code != 1000) {
-                    _connectionStatus.value = LiveConnectionStatus.DISCONNECTED
-                }
-            }
-
-            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                val safeErr = SecureKeyStoreHelper.redactSecret(t.message, currentApiKey)
-                Log.e(TAG, "WebSocket failure on $modelId: $safeErr")
-                if (!isSessionActive.get()) return
-                if (!isSetupComplete.get() && index + 1 < LIVE_CANDIDATE_MODELS.size) {
-                    scope.launch {
-                        connectWithModelIndex(index + 1)
+                    Log.d(TAG, "Gemini Live WebSocket opened with model $modelId")
+                    runCatching { sendSetupMessage(webSocket, modelId) }.onFailure { err ->
+                        Log.e(TAG, "Failed sending setup message: ${err.message}")
                     }
-                } else {
-                    restoreAudioMode()
-                    _connectionStatus.value = LiveConnectionStatus.ERROR
-                    onFallbackRequired?.invoke(
-                        SecureKeyStoreHelper.redactSecret(t.localizedMessage, currentApiKey)
-                            .ifBlank { "WebSocket connection failed" }
-                    )
                 }
+
+                override fun onMessage(webSocket: WebSocket, text: String) {
+                    handleServerFrame(text)
+                }
+
+                override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                    handleServerFrame(bytes.utf8())
+                }
+
+                override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                    val safeReason = SecureKeyStoreHelper.redactSecret(reason, currentApiKey)
+                    Log.w(TAG, "WebSocket closing ($code): $safeReason")
+                    runCatching { webSocket.close(code, reason) }
+                }
+
+                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                    val safeReason = SecureKeyStoreHelper.redactSecret(reason, currentApiKey)
+                    Log.w(TAG, "WebSocket closed ($code): $safeReason")
+                    if (!isSessionActive.get() || code == 1000) return
+
+                    micCaptureJob?.cancel()
+                    audioPlaybackJob?.cancel()
+                    isSetupComplete.set(false)
+
+                    if (!hasReceivedModelResponse.get() && index + 1 < LIVE_CANDIDATE_MODELS.size) {
+                        scope.launch {
+                            connectWithModelIndex(index + 1)
+                        }
+                    } else if (!hasReceivedModelResponse.get() && appContext != null && !isRobolectricRuntime()) {
+                        startFirebaseAiLiveSession()
+                    } else {
+                        triggerFallbackOnMain("Live WebSocket closed ($code)")
+                    }
+                }
+
+                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                    val safeErr = SecureKeyStoreHelper.redactSecret(t.message, currentApiKey)
+                    Log.e(TAG, "WebSocket failure on $modelId: $safeErr")
+                    if (!isSessionActive.get()) return
+
+                    micCaptureJob?.cancel()
+                    audioPlaybackJob?.cancel()
+                    isSetupComplete.set(false)
+
+                    if (!hasReceivedModelResponse.get() && index + 1 < LIVE_CANDIDATE_MODELS.size) {
+                        scope.launch {
+                            connectWithModelIndex(index + 1)
+                        }
+                    } else if (!hasReceivedModelResponse.get() && appContext != null && !isRobolectricRuntime()) {
+                        startFirebaseAiLiveSession()
+                    } else {
+                        triggerFallbackOnMain(
+                            SecureKeyStoreHelper.redactSecret(t.localizedMessage, currentApiKey)
+                                .ifBlank { "WebSocket connection failed" }
+                        )
+                    }
+                }
+            })
+        } catch (t: Throwable) {
+            val safeErr = SecureKeyStoreHelper.redactSecret(t.message, currentApiKey)
+            Log.e(TAG, "Failed to open Gemini Live WebSocket: $safeErr")
+            triggerFallbackOnMain("Could not start live WebSocket")
+        }
+    }
+
+    private fun buildInitialGreetingPrompt(): String {
+        val isArabic = currentLanguage == AppLanguage.ARABIC
+        return if (currentGemPersona == "GEMINI_DEFAULT") {
+            if (isArabic) {
+                "رحّب بالمستخدم بودّ واختصار شديد في جملة واحدة كمساعد Gemini الصوتي، وأخبره أنك تستمع إليه."
+            } else {
+                "Greet the user warmly in one short sentence as Gemini Live and say you are listening."
             }
-        })
+        } else {
+            if (isArabic) {
+                "رحّب بالمستخدم ترحيباً ملكياً دافئاً في جملة قصيرة وأخبره أنك تستمع إليه الآن."
+            } else {
+                "Greet the user warmly in one royal sentence and say you are listening."
+            }
+        }
     }
 
     private fun buildLiveSystemInstruction(): String {
         val isArabic = currentLanguage == AppLanguage.ARABIC
+        val clockContext = com.example.data.api.EverydayKnowledgeHelper.buildCurrentDateTimeContext(currentLanguage)
         val baseInstruction = when (currentGemPersona) {
             "GEMINI_DEFAULT" -> if (isArabic) {
-                """أنت مساعد Google Gemini الصوتي المباشر (Gemini Live). تحدث بصوت طبيعي، دافئ، ومترابط باللغة العربية الواضحة (أو العامية المصرية اللطيفة عند مخاطبتك بها). أكمل فكرتك وجملك الصوتية بوضوح وانسيابية في جملتين إلى خمس جمل وافية ومترابطة كمحادثة هاتفية حقيقية دون توقف مفاجئ."""
+                """أنت مساعد Google Gemini الصوتي المباشر (Gemini Live). تحدث بصوت طبيعي، دافئ، ومترابط باللغة العربية الواضحة. لديك القدرة الكاملة على الرد على جميع الأسئلة اليومية والطبيعية: التحيات («إزيك»، «عامل إيه»)، التاريخ واليوم والوقت الحالي، حالة الجو والطقس، التكنولوجيا والبرمجة وBlender، أفلام الكرتون والأنيميشن، والعلوم العامة دون أي خلط بالتاريخ الفرعوني.
+$clockContext"""
             } else {
-                """You are Google Gemini Live. Speak naturally, warmly, and conversationally in clear English. Complete your thoughts smoothly in 2 to 5 coherent spoken sentences like a real phone conversation."""
+                """You are Google Gemini Live. Speak naturally, warmly, and conversationally in clear English. Answer all everyday questions—greetings, today's date/day/time, weather, coding, Blender, technology, animated/cartoon movies, and general topics—directly without any historical roleplay.
+$clockContext"""
             }
             else -> if (isArabic) {
-                """أنت الملك رمسيس الثاني العظيم، فرعون مصر وابن رع، تتحدث مباشرة بصوتك الملكي المهيب والدافئ عبر محادثة صوتية حية (Live). خاطب محدثك بوقار ومودة، وأكمل إجاباتك الصوتية بسلاسة وترابط (في جملتين إلى خمس جمل وافية وواضحة بدون رموز) حتى تصل الفكرة كاملة للمستمع."""
+                """في الأسئلة التاريخية والأثرية وأسئلة الحضارة المصرية القديمة، تحدث بشخصية الملك رمسيس الثاني بوقار ومودة بدون ذكر أرقام صفحات في كلامك المنطوق. وفي الأسئلة اليومية الطبيعية (إزيك، عامل إيه، التاريخ، اليوم، الوقت، حالة الجو، أفلام الكرتون، الثقافة العامة) أجب بودّ وذكاء ودقة مستنداً لمعلومات الوقت الحالية ومعرفتك الشاملة دون أن تقول إنك لا تعرف. أما إذا سألك المستخدم أي سؤال يخص البرمجة، الأكواد، برنامج Blender، أو التكنولوجيا الحديثة، فأجب فوراً كمساعد تقني طبيعي مباشر بدون خلط بين التكنولوجيا والتاريخ والآثار.
+$clockContext"""
             } else {
-                """You are King Rameses II, the Great Pharaoh of Egypt, speaking live in real time with a warm, regal, majestic voice. Answer questions smoothly and completely in 2 to 5 clear spoken sentences."""
+                """For ancient Egypt, history, and antiquities questions, speak warmly as King Rameses II without reciting page numbers aloud. For everyday questions (how you are, date, day, current time, weather, animated/cartoon movies, general topics), answer warmly, naturally, and accurately using the provided clock context and broad knowledge. For coding, programming, Blender, or modern technology, answer directly and purely technically without mixing history.
+$clockContext"""
             }
         }
 
         val enabledDocs = currentRagDocs.filter { it.isEnabled }
         if (enabledDocs.isEmpty()) return baseInstruction
 
-        val ragSection = enabledDocs.take(5).joinToString("\n") { "• ${it.title}: ${it.content.take(400)}" }
-        return "$baseInstruction\n\n[معلومات موثقة من قاعدة المعرفة]:\n$ragSection"
+        val ragSection = enabledDocs.take(4).joinToString("\n") { "• ${it.title}: ${it.content.take(350)}" }
+        return "$baseInstruction\n\n[مراجع إضافية عند الحاجة التاريخية فقط]:\n$ragSection"
     }
 
     private fun sendSetupMessage(ws: WebSocket, modelId: String) {
@@ -372,82 +702,71 @@ class GeminiLiveWebSocketClient(
         try {
             val root = JSONObject(rawJson)
 
-            // 1. Setup Complete -> Start real-time audio engine & greet / listen immediately!
             if (root.has("setupComplete")) {
                 isSetupComplete.set(true)
                 _connectionStatus.value = LiveConnectionStatus.CONNECTED
                 _voiceState.value = VoiceCallState.LISTENING
                 startAudioPlaybackLoop()
                 startMicrophoneStreamingLoop()
-
-                val greetingPrompt = if (currentLanguage == AppLanguage.ARABIC) {
-                    "رحّب بالمستخدم ترحيباً ملكياً دافئاً في جملة قصيرة وأخبره أنك تستمع إليه الآن."
-                } else {
-                    "Greet the user warmly in one royal sentence and say you are listening."
-                }
-                sendTextMessage(greetingPrompt, showInUserTranscript = false)
+                sendTextMessage(buildInitialGreetingPrompt(), showInUserTranscript = false)
                 return
             }
 
             val serverContent = root.optJSONObject("serverContent") ?: return
 
-            // 2. Server-side VAD Interruption:
-            // CRITICAL ECHO GUARD: If AI audio is currently playing (or in loudspeaker reverb tail),
-            // ignore spurious server `interrupted` events caused by acoustic speaker echo!
-            // Explicit user interruption via the golden Stop button (`interruptModelSpeech()`) always works immediately.
             if (serverContent.optBoolean("interrupted", false)) {
                 if (isEchoGateActive()) {
-                    Log.d(TAG, "Echo Guard: Ignored speaker-echo self-interruption while Ramses is speaking")
+                    Log.d(TAG, "Echo Guard: Ignored speaker-echo self-interruption while speaking")
                     return
                 }
-                Log.d(TAG, "User interruption detected: flushing AI audio playback")
                 flushAudioPlayback()
                 _voiceState.value = VoiceCallState.LISTENING
                 return
             }
 
-            // 3. Live User Speech Transcription (ignored while AI is speaking so speaker echo isn't transcribed as user speech)
             val inputTranscription = serverContent.optJSONObject("inputTranscription")
             if (inputTranscription != null && !isEchoGateActive()) {
-                val chunk = inputTranscription.optString("text", "")
+                val chunk = stripHiddenVoiceTokens(inputTranscription.optString("text", ""))
                 if (chunk.isNotEmpty()) {
                     if (isModelTurnComplete.get() && modelTranscriptBuffer.isNotEmpty()) {
                         modelTranscriptBuffer.setLength(0)
                     }
                     userTranscriptBuffer.append(chunk)
-                    _liveUserTranscript.value = userTranscriptBuffer.toString().trim()
+                    _liveUserTranscript.value = stripHiddenVoiceTokens(userTranscriptBuffer.toString()).trim()
                 }
             }
 
-            // 4. Live AI Voice Transcription
             val outputTranscription = serverContent.optJSONObject("outputTranscription")
             if (outputTranscription != null) {
                 val chunk = outputTranscription.optString("text", "")
                 if (chunk.isNotEmpty()) {
+                    hasReceivedModelResponse.set(true)
                     isModelTurnComplete.set(false)
                     if (!_isSpeakerMuted.value) {
                         isAiAudioPlaying.set(true)
                     }
                     modelTranscriptBuffer.append(chunk)
-                    _liveModelTranscript.value = modelTranscriptBuffer.toString().trim()
+                    val cleanedModel = stripHiddenVoiceTokens(modelTranscriptBuffer.toString()).trim()
+                    _liveModelTranscript.value = cleanedModel
                 }
             }
 
-            // 5. Native 24kHz PCM Audio Chunks from Model Turn
             val modelTurn = serverContent.optJSONObject("modelTurn")
             val parts = modelTurn?.optJSONArray("parts")
             if (parts != null) {
                 val gen = playbackGeneration.get()
                 for (i in 0 until parts.length()) {
                     val part = parts.getJSONObject(i)
+                    if (part.optBoolean("thought", false)) continue
                     val inlineData = part.optJSONObject("inlineData")
                     if (inlineData != null) {
                         val mimeType = inlineData.optString("mimeType", "")
                         val base64Audio = inlineData.optString("data", "")
                         if (mimeType.startsWith("audio/pcm") && base64Audio.isNotEmpty()) {
+                            hasReceivedModelResponse.set(true)
                             isModelTurnComplete.set(false)
-                            val pcmBytes = Base64.decode(base64Audio, Base64.DEFAULT)
-                            if (pcmBytes.isNotEmpty() && !_isSpeakerMuted.value) {
+                            val pcmBytes = runCatching { Base64.decode(base64Audio, Base64.DEFAULT) }.getOrNull()
+                            if (pcmBytes != null && pcmBytes.isNotEmpty() && !_isSpeakerMuted.value) {
                                 isAiAudioPlaying.set(true)
                                 _voiceState.value = VoiceCallState.SPEAKING
                                 pcmPlaybackChannel.trySend(gen to pcmBytes)
@@ -457,17 +776,14 @@ class GeminiLiveWebSocketClient(
                 }
             }
 
-            // 6. Turn Complete -> Persist turn transcripts & enqueue sentinel to transition smoothly after speaker drains
             if (serverContent.optBoolean("turnComplete", false)) {
                 isModelTurnComplete.set(true)
-                val finalUser = userTranscriptBuffer.toString().trim()
-                val finalModel = modelTranscriptBuffer.toString().trim()
+                val finalUser = stripHiddenVoiceTokens(userTranscriptBuffer.toString()).trim()
+                val finalModel = stripHiddenVoiceTokens(modelTranscriptBuffer.toString()).trim()
                 if (finalUser.isNotEmpty() || finalModel.isNotEmpty()) {
                     onTurnCompleted?.invoke(finalUser, finalModel)
                 }
                 userTranscriptBuffer.setLength(0)
-
-                // Enqueue empty sentinel chunk so state transitions to LISTENING after AudioTrack finishes + reverb decays
                 pcmPlaybackChannel.trySend(playbackGeneration.get() to ByteArray(0))
             }
         } catch (e: Exception) {
@@ -477,7 +793,7 @@ class GeminiLiveWebSocketClient(
 
     /**
      * Sends a text message or quick prompt directly into the active Gemini Live session
-     * so Gemini responds immediately with native 24kHz voice audio.
+     * using valid `clientContent` turns (or Firebase `LiveSession.send`).
      */
     fun sendTextMessage(text: String, showInUserTranscript: Boolean = true) {
         val trimmed = text.trim()
@@ -492,21 +808,21 @@ class GeminiLiveWebSocketClient(
             userTranscriptBuffer.append(trimmed)
             _liveUserTranscript.value = trimmed
         }
-        // Activate echo guard slightly ahead of incoming greeting/response audio so mic stays clean
         echoTailUntilElapsedMs.set(SystemClock.elapsedRealtime() + 450L)
         _voiceState.value = VoiceCallState.THINKING
 
-        val payload = JSONObject().apply {
-            put("realtimeInput", JSONObject().apply {
-                put("text", trimmed)
-            })
+        val fbSession = firebaseLiveSession
+        if (fbSession != null) {
+            scope.launch {
+                runCatching { fbSession.send(trimmed) }.onFailure { err ->
+                    Log.w(TAG, "Failed sending text to Firebase LiveSession: ${err.message}")
+                }
+            }
+        } else {
+            webSocket?.send(buildClientTextPayload(trimmed))
         }
-        webSocket?.send(payload.toString())
     }
 
-    /**
-     * Explicitly interrupts AI voice playback (manual user barge-in button) and listens to the user immediately.
-     */
     fun interruptModelSpeech() {
         flushAudioPlayback()
         _isMicMuted.value = false
@@ -594,6 +910,12 @@ class GeminiLiveWebSocketClient(
                 return@launch
             }
 
+            if (track.state != AudioTrack.STATE_INITIALIZED) {
+                Log.w(TAG, "AudioTrack not initialized on current audio device; releasing.")
+                runCatching { track.release() }
+                return@launch
+            }
+
             audioTrack = track
             try {
                 track.play()
@@ -602,8 +924,6 @@ class GeminiLiveWebSocketClient(
                     if (gen != playbackGeneration.get()) continue
 
                     if (pcmChunk.isEmpty()) {
-                        // Sentinel marking end of AI speech turn:
-                        // Hold mic gate for ECHO_TAIL_COOLDOWN_MS while hardware AudioTrack drains & room echo decays
                         _liveRmsDb.value = 0f
                         echoTailUntilElapsedMs.set(SystemClock.elapsedRealtime() + ECHO_TAIL_COOLDOWN_MS)
                         isAiAudioPlaying.set(false)
@@ -625,7 +945,6 @@ class GeminiLiveWebSocketClient(
                     isAiAudioPlaying.set(true)
                     _voiceState.value = VoiceCallState.SPEAKING
 
-                    // Write in ~80ms slices (3840 bytes at 24kHz 16-bit) so lip-sync RMS updates at ~12.5 Hz smoothly!
                     val sliceSize = 3840
                     var offset = 0
                     while (offset < pcmChunk.size && gen == playbackGeneration.get() && !_isSpeakerMuted.value) {
@@ -660,7 +979,6 @@ class GeminiLiveWebSocketClient(
                 AudioFormat.ENCODING_PCM_16BIT
             ).coerceAtLeast(PCM_CHUNK_BYTES * 2)
 
-            // Prefer VOICE_COMMUNICATION for hardware Acoustic Echo Cancellation; fallback to MIC if needed
             var recorder = tryCreateAudioRecord(MediaRecorder.AudioSource.VOICE_COMMUNICATION, minBuffer)
             if (recorder == null) {
                 recorder = tryCreateAudioRecord(MediaRecorder.AudioSource.MIC, minBuffer)
@@ -683,7 +1001,6 @@ class GeminiLiveWebSocketClient(
                         continue
                     }
 
-                    // Always read from AudioRecord to drain OS microphone ringbuffer without overflow
                     val readBytes = recorder.read(buffer, 0, buffer.size)
                     if (readBytes <= 0) {
                         delay(20)
@@ -694,22 +1011,18 @@ class GeminiLiveWebSocketClient(
                         continue
                     }
 
-                    // CRITICAL ECHO GUARD:
-                    // While Ramses's voice is playing through the speaker (or decaying in the room),
-                    // stream zeroed silence PCM instead of speaker-contaminated mic audio so Gemini's
-                    // VAD never mistakes Ramses's own voice for user interruption!
+                    val fbSession = firebaseLiveSession
+
                     if (isEchoGateActive()) {
                         val silentSlice = if (readBytes == silenceBuffer.size) silenceBuffer else ByteArray(readBytes)
-                        val silentB64 = Base64.encodeToString(silentSlice, Base64.NO_WRAP)
-                        val silentFrame = JSONObject().apply {
-                            put("realtimeInput", JSONObject().apply {
-                                put("audio", JSONObject().apply {
-                                    put("mimeType", "audio/pcm;rate=16000")
-                                    put("data", silentB64)
-                                })
-                            })
+                        if (fbSession != null) {
+                            runCatching {
+                                fbSession.sendAudioRealtime(InlineData(silentSlice, "audio/pcm;rate=16000"))
+                            }
+                        } else {
+                            val silentB64 = Base64.encodeToString(silentSlice, Base64.NO_WRAP)
+                            webSocket?.send(buildRealtimeAudioPayload(silentB64))
                         }
-                        webSocket?.send(silentFrame.toString())
                         continue
                     }
 
@@ -718,18 +1031,15 @@ class GeminiLiveWebSocketClient(
                         _liveRmsDb.value = micRms
                     }
 
-                    val chunkToEncode = if (readBytes == buffer.size) buffer else buffer.copyOf(readBytes)
-                    val b64 = Base64.encodeToString(chunkToEncode, Base64.NO_WRAP)
-
-                    val audioFrame = JSONObject().apply {
-                        put("realtimeInput", JSONObject().apply {
-                            put("audio", JSONObject().apply {
-                                put("mimeType", "audio/pcm;rate=16000")
-                                put("data", b64)
-                            })
-                        })
+                    val chunkToSend = if (readBytes == buffer.size) buffer.copyOf() else buffer.copyOf(readBytes)
+                    if (fbSession != null) {
+                        runCatching {
+                            fbSession.sendAudioRealtime(InlineData(chunkToSend, "audio/pcm;rate=16000"))
+                        }
+                    } else {
+                        val b64 = Base64.encodeToString(chunkToSend, Base64.NO_WRAP)
+                        webSocket?.send(buildRealtimeAudioPayload(b64))
                     }
-                    webSocket?.send(audioFrame.toString())
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Mic capture loop ended: ${e.message}")
@@ -763,11 +1073,6 @@ class GeminiLiveWebSocketClient(
         }
     }
 
-    /**
-     * Enables hardware DSP Acoustic Echo Cancellation and Noise Suppression.
-     * Deliberately omits AutomaticGainControl (AGC) because AGC boosts residual loudspeaker
-     * reflections into the voice-activity threshold on mobile speakerphones.
-     */
     private fun attachHardwareAudioEffects(audioSessionId: Int) {
         try {
             if (AcousticEchoCanceler.isAvailable()) {
@@ -788,10 +1093,6 @@ class GeminiLiveWebSocketClient(
         noiseSuppressor = null
     }
 
-    /**
-     * Computes a responsive 0f..15f dB-like amplitude metric from 16-bit little-endian PCM bytes
-     * to drive 3D Avatar mouth morphing and equalizer bars smoothly.
-     */
     private fun computePcmRmsDb(bytes: ByteArray, offset: Int, length: Int): Float {
         if (length < 2) return 0f
         val shortCount = length / 2
@@ -803,7 +1104,6 @@ class GeminiLiveWebSocketClient(
         }
         val rms = sqrt(sumSquares / shortCount)
         if (rms <= 0.0005) return 0f
-        // Map [-50dBFS .. -6dBFS] into [0f .. 15f]
         val dbFs = 20.0 * log10(rms)
         return (((dbFs + 48.0) / 42.0) * 15.0).toFloat().coerceIn(0f, 15f)
     }
@@ -811,9 +1111,22 @@ class GeminiLiveWebSocketClient(
     fun stopSession() {
         isSessionActive.set(false)
         isSetupComplete.set(false)
+        hasReceivedModelResponse.set(false)
         isAiAudioPlaying.set(false)
         echoTailUntilElapsedMs.set(0L)
         playbackGeneration.incrementAndGet()
+
+        firebaseConnectAndReceiveJob?.cancel()
+        firebaseConnectAndReceiveJob = null
+
+        val fbSession = firebaseLiveSession
+        firebaseLiveSession = null
+        if (fbSession != null) {
+            scope.launch {
+                runCatching { fbSession.stopAudioConversation() }
+                runCatching { fbSession.close() }
+            }
+        }
 
         micCaptureJob?.cancel()
         micCaptureJob = null

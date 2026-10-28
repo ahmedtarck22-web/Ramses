@@ -2,6 +2,7 @@ package com.example
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
+import com.example.data.api.EverydayKnowledgeHelper
 import com.example.data.api.GeminiApiClient
 import com.example.data.model.AppLanguage
 import com.example.data.repository.FirestoreRagRepository
@@ -311,6 +312,249 @@ class ExampleRobolectricTest {
     }
   }
 
+  @Test
+  fun `extreme aspect ratio and recycled bitmaps do not crash GeminiApiClient multimodal encoding`() {
+    val client = GeminiApiClient()
+
+    // 1. Extreme wide banner (2048 x 1) previously rounded height to 0 and threw IllegalArgumentException
+    val wideBitmap = android.graphics.Bitmap.createBitmap(
+      2048,
+      1,
+      android.graphics.Bitmap.Config.ARGB_8888
+    )
+    val wideBody = JSONObject(
+      client.buildRequestBody(
+        prompt = "حلل هذا الشريط الهيروغليفي",
+        history = emptyList(),
+        imageBitmap = wideBitmap,
+        withSearch = false,
+        isVoiceCall = false,
+        ragContext = emptyList(),
+        appLanguage = AppLanguage.ARABIC,
+        gemPersona = "RAMSES"
+      )
+    )
+    val wideParts = wideBody.getJSONArray("contents").getJSONObject(0).getJSONArray("parts")
+    assertTrue("Expected image + text parts for extreme aspect ratio bitmap", wideParts.length() >= 2)
+
+    // 2. Recycled bitmap is safely skipped instead of crashing Canvas/compress
+    val recycledBitmap = android.graphics.Bitmap.createBitmap(
+      256,
+      256,
+      android.graphics.Bitmap.Config.ARGB_8888
+    )
+    recycledBitmap.recycle()
+    assertTrue(recycledBitmap.isRecycled)
+
+    val recycledBody = JSONObject(
+      client.buildRequestBody(
+        prompt = "سؤال نصي بعد تدوير الصورة",
+        history = emptyList(),
+        imageBitmap = recycledBitmap,
+        withSearch = false,
+        isVoiceCall = false,
+        ragContext = emptyList(),
+        appLanguage = AppLanguage.ARABIC,
+        gemPersona = "RAMSES"
+      )
+    )
+    val recycledParts = recycledBody.getJSONArray("contents").getJSONObject(0).getJSONArray("parts")
+    assertEquals("Recycled bitmap should be omitted cleanly, leaving prompt text part", 1, recycledParts.length())
+  }
+
+  @Test
+  fun `cold RamsesViewModel and headless SceneView support guard against missing FirebaseApp and native GL crashes`() {
+    val app = ApplicationProvider.getApplicationContext<android.app.Application>()
+
+    // 1. Headless Robolectric JVM safely detects lack of Filament/GLES3 without UnsatisfiedLinkError
+    assertFalse(com.example.ui.components.isFilament3DSupported(app))
+
+    // 2. Clear any existing FirebaseApp instances to simulate cold uninitialized process startup
+    com.google.firebase.FirebaseApp.clearInstancesForTest()
+
+    val vm = com.example.ui.viewmodel.RamsesViewModel(app)
+    try {
+      assertEquals(com.example.data.model.AuthProvider.GUEST, vm.userProfile.value.provider)
+      assertFalse(vm.userProfile.value.isSignedIn)
+    } finally {
+      vm.ttsHelper.shutdown()
+      vm.geminiLiveClient.stopSession()
+    }
+  }
+
+  @Test
+  fun `domain classifier separates coding and Blender queries from Ramses history and formats page citations`() = kotlinx.coroutines.runBlocking {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val fakeDb = createLocalTestFirestore(context)
+    val repo = FirestoreRagRepository(
+      db = fakeDb,
+      appContext = context,
+      authProvider = { null }
+    )
+    val client = GeminiApiClient()
+
+    // 1. Tech & Blender queries route to TECHNICAL_MODERN even if RAMSES gem was previously selected
+    assertEquals(
+      GeminiApiClient.Companion.QueryDomain.TECHNICAL_MODERN,
+      GeminiApiClient.classifyQueryDomain(
+        prompt = "ازاي اعمل موديل في بلندر Blender واكتب سكريبت Python؟",
+        selectedGem = "RAMSES"
+      )
+    )
+    assertEquals(
+      GeminiApiClient.Companion.QueryDomain.TECHNICAL_MODERN,
+      GeminiApiClient.classifyQueryDomain(
+        prompt = "اكتب كود Kotlin لعمل واجهة Jetpack Compose",
+        selectedGem = "RAMSES"
+      )
+    )
+
+    // 2. Historical Egyptology queries route to HISTORICAL_RAMSES
+    assertEquals(
+      GeminiApiClient.Companion.QueryDomain.HISTORICAL_RAMSES,
+      GeminiApiClient.classifyQueryDomain(
+        prompt = "حدثني عن الملك رمسيس الثاني ومعركة قادش ومعبد أبو سمبل",
+        selectedGem = "GEMINI_DEFAULT"
+      )
+    )
+
+    // 3. Request body for Blender/code enforces pure Google Gemini instruction without Pharaonic mixing
+    val blenderBody = JSONObject(
+      client.buildRequestBody(
+        prompt = "شرح اختصارات Edit Mode في برنامج Blender",
+        history = emptyList(),
+        imageBitmap = null,
+        withSearch = false,
+        isVoiceCall = false,
+        ragContext = emptyList(),
+        appLanguage = AppLanguage.ARABIC,
+        gemPersona = "RAMSES"
+      )
+    )
+    val blenderSystemText = blenderBody
+      .getJSONObject("systemInstruction")
+      .getJSONArray("parts")
+      .getJSONObject(0)
+      .getString("text")
+    assertTrue(blenderSystemText.contains("أنت Google Gemini"))
+    assertTrue(blenderSystemText.contains("يُمنع منعاً باتاً تقمّص شخصية الملك رمسيس"))
+
+    // 4. RAG repository returns empty passages for pure tech/Blender queries and page-numbered citations for Egyptology
+    val techHits = repo.retrieveRelevantPassages("ازاي اعمل كود بايثون او موديل في بلندر")
+    assertTrue("Expected zero Egyptology RAG hits for pure coding/Blender query", techHits.isEmpty())
+
+    val historyHits = repo.retrieveRelevantPassages("معركة قادش ومعاهدة السلام مع الحيثيين")
+    assertTrue("Expected Egyptology RAG hits for Kadesh query", historyHits.isNotEmpty())
+    val citationTitle = historyHits.first().toCitationTitle()
+    assertTrue(
+      "Expected citation title to include explicit page number label, got: $citationTitle",
+      citationTitle.contains("الصفحة:")
+    )
+  }
+
+  @Test
+  fun `hidden thinking and audio control tokens inline page mentions and Live WebSocket JSON payloads are validated`() {
+    val dirtyModelOutput = "<thought>analyzing prompt</thought>[audio_token]<|eot_id|>هذا هو الكود المطلوب"
+    assertEquals(
+      "هذا هو الكود المطلوب",
+      GeminiApiClient.stripHiddenControlTokens(dirtyModelOutput).trim()
+    )
+    assertEquals(
+      "أهلاً بك",
+      GeminiLiveWebSocketClient.stripHiddenVoiceTokens("<thinking>plan</thinking>[audio]أهلاً بك").trim()
+    )
+
+    val proseWithInlinePages = "قاد الملك رمسيس الثاني معركة قادش من صفحة 45 وحقق السلام (المصدر: موسوعة مصر القديمة، الصفحة: 41–55) ببراعة."
+    val cleanedProse = GeminiApiClient.stripInlineSourceMentions(proseWithInlinePages)
+    assertFalse("Inline 'من صفحة' must be stripped from historical prose", cleanedProse.contains("من صفحة"))
+    assertFalse("Inline parenthetical source must be stripped from historical prose", cleanedProse.contains("المصدر:"))
+    assertTrue(cleanedProse.contains("قاد الملك رمسيس الثاني معركة قادش"))
+
+    val historicalInstruction = GeminiApiClient.buildEffectiveSystemInstruction(
+      gemPersona = "RAMSES",
+      appLanguage = AppLanguage.ARABIC,
+      isVoiceCall = false,
+      prompt = "حدثني عن معركة قادش"
+    )
+    assertTrue(historicalInstruction.contains("توجيه أساسي وملزم للردود النصية المكتوبة"))
+    assertTrue(historicalInstruction.contains("نهاية الرسالة فقط"))
+
+    val clientTextJson = JSONObject(GeminiLiveWebSocketClient.buildClientTextPayload("مرحبا يا رمسيس"))
+    assertTrue("Text turn must use clientContent, never realtimeInput.text", clientTextJson.has("clientContent"))
+    assertFalse(clientTextJson.has("realtimeInput"))
+    val clientContent = clientTextJson.getJSONObject("clientContent")
+    assertTrue(clientContent.getBoolean("turnComplete"))
+    assertEquals(
+      "مرحبا يا رمسيس",
+      clientContent.getJSONArray("turns").getJSONObject(0).getJSONArray("parts").getJSONObject(0).getString("text")
+    )
+
+    val audioJson = JSONObject(GeminiLiveWebSocketClient.buildRealtimeAudioPayload("AAAA"))
+    val mediaChunk = audioJson.getJSONObject("realtimeInput").getJSONArray("mediaChunks").getJSONObject(0)
+    assertEquals("audio/pcm;rate=16000", mediaChunk.getString("mimeType"))
+    assertEquals("AAAA", mediaChunk.getString("data"))
+
+    val pastedKeyWithRtlMarks = "\u200F\u200E AIzaSyTestKey_987654321 \n\t"
+    assertEquals("AIzaSyTestKey_987654321", GeminiApiClient.sanitizeApiKey(pastedKeyWithRtlMarks))
+    assertEquals("AIzaSyTestKey_987654321", GeminiLiveWebSocketClient.sanitizeApiKey(pastedKeyWithRtlMarks))
+  }
+
+  @Test
+  fun `everyday knowledge helper answers greetings date time weather cartoons and tech naturally`() {
+    assertEquals("ازيك عامل ايه", EverydayKnowledgeHelper.normalizeArabic("إزيك عامل إيه؟"))
+
+    val clockContext = EverydayKnowledgeHelper.buildCurrentDateTimeContext(AppLanguage.ARABIC)
+    assertTrue(clockContext.contains("معلومات الوقت والتاريخ الحقيقية"))
+
+    val instructionWithClock = GeminiApiClient.buildEffectiveSystemInstruction(
+      gemPersona = "RAMSES",
+      appLanguage = AppLanguage.ARABIC,
+      isVoiceCall = false,
+      prompt = "عامل إيه والنهاردة يوم إيه؟"
+    )
+    assertTrue(instructionWithClock.contains("معلومات الوقت والتاريخ الحقيقية"))
+
+    val greetingReply = EverydayKnowledgeHelper.generateNaturalEverydayResponse(
+      prompt = "إزيك عامل إيه؟",
+      appLanguage = AppLanguage.ARABIC,
+      isVoiceCall = false,
+      gemPersona = "RAMSES"
+    )
+    assertTrue("Expected natural warm greeting reply, got: $greetingReply", greetingReply.isNotBlank())
+
+    val dateTimeReply = EverydayKnowledgeHelper.generateNaturalEverydayResponse(
+      prompt = "التاريخ والوقت واليوم إيه النهاردة؟",
+      appLanguage = AppLanguage.ARABIC,
+      isVoiceCall = false,
+      gemPersona = "RAMSES"
+    )
+    assertTrue("Expected real-time date/day/time reply, got: $dateTimeReply", dateTimeReply.contains("التاريخ") || dateTimeReply.contains("الساعة"))
+
+    val weatherReply = EverydayKnowledgeHelper.generateNaturalEverydayResponse(
+      prompt = "الجو عامل إيه النهاردة؟",
+      appLanguage = AppLanguage.ARABIC,
+      isVoiceCall = false,
+      gemPersona = "RAMSES"
+    )
+    assertTrue("Expected weather reply, got: $weatherReply", weatherReply.contains("الطقس") || weatherReply.contains("الجو"))
+
+    val cartoonReply = EverydayKnowledgeHelper.generateNaturalEverydayResponse(
+      prompt = "كلمني عن فيلم كرتون الأسد الملك",
+      appLanguage = AppLanguage.ARABIC,
+      isVoiceCall = false,
+      gemPersona = "RAMSES"
+    )
+    assertTrue("Expected Lion King cartoon reply, got: $cartoonReply", cartoonReply.contains("الأسد الملك") || cartoonReply.contains("سيمبا"))
+
+    val blenderReply = EverydayKnowledgeHelper.generateNaturalEverydayResponse(
+      prompt = "اشرح اختصارات بلندر",
+      appLanguage = AppLanguage.ARABIC,
+      isVoiceCall = false,
+      gemPersona = "GEMINI_DEFAULT"
+    )
+    assertTrue("Expected Blender technical reply, got: $blenderReply", blenderReply.contains("Blender"))
+  }
+
   private fun createLocalTestFirestore(context: Context): com.google.firebase.firestore.FirebaseFirestore {
     if (com.google.firebase.FirebaseApp.getApps(context).isEmpty()) {
       com.google.firebase.FirebaseApp.initializeApp(
@@ -328,4 +572,6 @@ class ExampleRobolectricTest {
     )
   }
 }
+
+
 

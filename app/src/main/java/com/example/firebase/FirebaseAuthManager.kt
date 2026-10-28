@@ -33,15 +33,22 @@ class FirebaseAuthManager(private val context: Context) {
 
         fun getInstance(context: Context): FirebaseAuthManager {
             return instance ?: synchronized(this) {
-                instance ?: FirebaseAuthManager(context.applicationContext).also { instance = it }
+                val appCtx = context.applicationContext ?: context
+                ensureFirebaseInitialized(appCtx)
+                instance ?: FirebaseAuthManager(appCtx).also { instance = it }
             }
         }
     }
 
-    private val auth = FirebaseAuth.getInstance()
+    private val auth: FirebaseAuth by lazy {
+        ensureFirebaseInitialized(context)
+        FirebaseAuth.getInstance()
+    }
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    private val _currentUser = MutableStateFlow<FirebaseUser?>(auth.currentUser)
+    private val _currentUser = MutableStateFlow<FirebaseUser?>(
+        runCatching { auth.currentUser }.getOrNull()
+    )
     val currentUser: StateFlow<FirebaseUser?> = _currentUser.asStateFlow()
 
     private val authStateListener = FirebaseAuth.AuthStateListener { firebaseAuth ->
@@ -49,7 +56,8 @@ class FirebaseAuthManager(private val context: Context) {
     }
 
     init {
-        auth.addAuthStateListener(authStateListener)
+        runCatching { auth.addAuthStateListener(authStateListener) }
+            .onFailure { Log.w(TAG, "AuthStateListener registration deferred: ${it.message}") }
     }
 
     suspend fun signInWithGoogle(activity: Activity): Result<FirebaseUser> {

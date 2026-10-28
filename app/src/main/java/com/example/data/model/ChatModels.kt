@@ -60,5 +60,6 @@ data class ChatMessage(
     val imageBase64: String? = null,
     val groundingSources: List<GroundingSource> = emptyList(),
     val isVoiceResponse: Boolean = false,
-    val isError: Boolean = false
+    val isError: Boolean = false,
+    val responderPersona: String = ""
 )

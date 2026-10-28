@@ -77,17 +77,22 @@ fun RamsesInputBar(
     Column(
         modifier = modifier
             .fillMaxWidth()
+            .background(Color.Black)
             .imePadding()
             .navigationBarsPadding()
-            .padding(horizontal = 20.dp, vertical = 10.dp)
+            .padding(horizontal = 16.dp, vertical = 6.dp)
     ) {
+        val validPreviewBitmap = selectedImageBitmap?.takeIf {
+            !it.isRecycled && it.width > 0 && it.height > 0
+        }
+
         // Thumbnail preview for selected artifact image
         AnimatedVisibility(
-            visible = selectedImageBitmap != null,
+            visible = validPreviewBitmap != null,
             enter = fadeIn(),
             exit = fadeOut()
         ) {
-            if (selectedImageBitmap != null) {
+            if (validPreviewBitmap != null) {
                 Box(
                     modifier = Modifier
                         .padding(bottom = 8.dp)
@@ -98,7 +103,7 @@ fun RamsesInputBar(
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Image(
-                            bitmap = selectedImageBitmap.asImageBitmap(),
+                            bitmap = validPreviewBitmap.asImageBitmap(),
                             contentDescription = "الصورة المختارة للتحليل",
                             modifier = Modifier
                                 .size(50.dp)
@@ -108,13 +113,21 @@ fun RamsesInputBar(
                         Spacer(modifier = Modifier.width(8.dp))
                         Column {
                             Text(
-                                text = "قطعة أثرية جاهزة للتحليل",
+                                text = if (appLanguage == com.example.data.model.AppLanguage.ARABIC) {
+                                    "صورة مرفقة جاهزة للتحليل"
+                                } else {
+                                    "Image attached for analysis"
+                                },
                                 fontFamily = AmiriFontFamily,
                                 fontSize = 12.sp,
                                 color = RoyalGold
                             )
                             Text(
-                                text = "انقر على إرسال ليسبر رمسيس أغوارها",
+                                text = if (appLanguage == com.example.data.model.AppLanguage.ARABIC) {
+                                    "اضغط إرسال لعرض الصورة وتحليلها بدقة"
+                                } else {
+                                    "Tap send to display & analyze accurately"
+                                },
                                 fontFamily = AmiriFontFamily,
                                 fontSize = 10.sp,
                                 color = TextSecondary

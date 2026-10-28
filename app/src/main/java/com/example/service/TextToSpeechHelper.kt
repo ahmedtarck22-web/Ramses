@@ -25,7 +25,8 @@ class TextToSpeechHelper(context: Context) {
     private var currentDoneCallback: (() -> Unit)? = null
 
     init {
-        tts = TextToSpeech(appContext) { status ->
+        try {
+            tts = TextToSpeech(appContext) { status ->
             if (status == TextToSpeech.SUCCESS) {
                 val arabicLocale = Locale.forLanguageTag("ar-EG")
                 val result = tts?.setLanguage(arabicLocale)
@@ -87,6 +88,11 @@ class TextToSpeechHelper(context: Context) {
                 Log.e("TTS", "TextToSpeech init failed with status: $status")
             }
         }
+        } catch (e: Exception) {
+            Log.e("TTS", "TextToSpeech service unavailable: ${e.message}")
+            tts = null
+            isInitialized = false
+        }
     }
 
     fun speak(text: String, languageCode: String? = null, onDoneCallback: (() -> Unit)? = null) {
@@ -104,11 +110,20 @@ class TextToSpeechHelper(context: Context) {
 
         currentDoneCallback = onDoneCallback
 
-        // Clean text of markdown symbols like * or # for smooth natural speech
+        val maxAllowed = runCatching {
+            (TextToSpeech.getMaxSpeechInputLength() - 100).coerceIn(1000, 3800)
+        }.getOrDefault(3800)
+
+        // Strip hidden thinking/audio control tokens and markdown symbols for smooth natural speech
         val cleaned = text
+            .replace(Regex("(?is)<thought>.*?</thought>"), " ")
+            .replace(Regex("(?is)<thinking>.*?</thinking>"), " ")
+            .replace(Regex("<\\|[^|>]*\\|>"), " ")
+            .replace(Regex("(?i)\\[(audio_token|audio|thought|thinking|hidden_token)\\]"), " ")
             .replace(Regex("[*#_`~>\\[\\]()]"), " ")
             .replace(Regex("\\s+"), " ")
             .trim()
+            .take(maxAllowed)
 
         if (cleaned.isBlank()) {
             mainHandler.post { onDoneCallback?.invoke() }
@@ -145,7 +160,17 @@ class TextToSpeechHelper(context: Context) {
 
         val utteranceId = "ramses_speech_${System.currentTimeMillis()}"
         _isSpeaking.value = true
-        tts?.speak(cleaned, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
+        val speakStatus = runCatching {
+            tts?.speak(cleaned, TextToSpeech.QUEUE_FLUSH, null, utteranceId)
+        }.getOrDefault(TextToSpeech.ERROR)
+
+        if (speakStatus == TextToSpeech.ERROR) {
+            _isSpeaking.value = false
+            val cb = currentDoneCallback
+            currentDoneCallback = null
+            mainHandler.post { cb?.invoke() }
+            return
+        }
 
         // Smart non-interrupting watchdog: never marks speech done while tts.isSpeaking is still true!
         val initialDelayMs = maxOf(8_000L, cleaned.length * 120L + 4000L).coerceAtMost(120_000L)
@@ -155,7 +180,7 @@ class TextToSpeechHelper(context: Context) {
     private fun scheduleWatchdogCheck(delayMs: Long) {
         mainHandler.postDelayed({
             if (!_isSpeaking.value) return@postDelayed
-            if (tts?.isSpeaking == true) {
+            if (runCatching { tts?.isSpeaking == true }.getOrDefault(false)) {
                 // Engine is still actively speaking; check again in 2 seconds instead of cutting off!
                 scheduleWatchdogCheck(2000L)
             } else {
@@ -169,15 +194,15 @@ class TextToSpeechHelper(context: Context) {
 
     fun stop() {
         mainHandler.removeCallbacksAndMessages(null)
-        tts?.stop()
+        runCatching { tts?.stop() }
         _isSpeaking.value = false
         currentDoneCallback = null
     }
 
     fun shutdown() {
         mainHandler.removeCallbacksAndMessages(null)
-        tts?.stop()
-        tts?.shutdown()
+        runCatching { tts?.stop() }
+        runCatching { tts?.shutdown() }
         tts = null
         _isSpeaking.value = false
         currentDoneCallback = null

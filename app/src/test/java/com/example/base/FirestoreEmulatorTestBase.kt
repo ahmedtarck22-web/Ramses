@@ -32,18 +32,24 @@ abstract class FirestoreEmulatorTestBase {
 
     @Before
     open fun setUpFirebase() {
+        org.junit.Assume.assumeTrue(
+            "Local Firebase Emulator not running on $EMULATOR_HOST:$FIRESTORE_PORT — skipping emulator rule test in standalone unit run",
+            isEmulatorReachable()
+        )
         val context = ApplicationProvider.getApplicationContext<Context>()
         val resId = context.resources.getIdentifier("firestore_database_id", "string", context.packageName)
-        databaseId = if (resId != 0) context.getString(resId) else "demo-database"
+        databaseId = if (resId != 0) context.getString(resId) else "ai-studio-android-ramsesai-ec0bc818-1b76-46de-ab39-1b92504efaed"
 
-        val app = if (FirebaseApp.getApps(context).isEmpty()) {
+        val existingApp = FirebaseApp.getApps(context).firstOrNull { it.name == EMULATOR_APP_NAME }
+        val app = if (existingApp == null) {
             val newApp = FirebaseApp.initializeApp(
                 context,
                 FirebaseOptions.Builder()
                     .setApplicationId("com.aistudio.ramsesai.kqzmpw")
                     .setProjectId(PROJECT_ID)
                     .setApiKey("fake-api-key-for-emulator")
-                    .build()
+                    .build(),
+                EMULATOR_APP_NAME
             )
             val newFirestore = FirebaseFirestore.getInstance(newApp, databaseId)
             newFirestore.useEmulator(EMULATOR_HOST, FIRESTORE_PORT)
@@ -55,7 +61,7 @@ abstract class FirestoreEmulatorTestBase {
             newAuth.useEmulator(EMULATOR_HOST, AUTH_PORT)
             newApp
         } else {
-            FirebaseApp.getInstance()
+            existingApp
         }
 
         firestore = FirebaseFirestore.getInstance(app, databaseId)
@@ -64,7 +70,9 @@ abstract class FirestoreEmulatorTestBase {
 
     @After
     open fun tearDownFirebase() {
-        auth.signOut()
+        if (this::auth.isInitialized) {
+            auth.signOut()
+        }
     }
 
     protected suspend fun signInTestUser(email: String): String = withContext(Dispatchers.IO) {
@@ -87,7 +95,19 @@ abstract class FirestoreEmulatorTestBase {
         return null
     }
 
+    private fun isEmulatorReachable(): Boolean {
+        return try {
+            java.net.Socket().use { socket ->
+                socket.connect(java.net.InetSocketAddress(EMULATOR_HOST, FIRESTORE_PORT), 250)
+                true
+            }
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
     private companion object {
+        const val EMULATOR_APP_NAME = "firestore-emulator-test-app"
         const val EMULATOR_HOST = "127.0.0.1"
         const val FIRESTORE_PORT = 8085
         const val AUTH_PORT = 9099

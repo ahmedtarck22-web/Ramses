@@ -8,25 +8,18 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -39,26 +32,21 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.example.data.model.AppLanguage
 import com.example.data.model.AvatarRigConfig
-import com.example.ui.theme.AmiriFontFamily
 import com.example.ui.theme.EgyptianCyan
 import com.example.ui.theme.PharaonicMidnight
 import com.example.ui.theme.RoyalGold
 import com.example.ui.theme.RoyalGoldLight
-import io.github.sceneview.Scene
 import io.github.sceneview.math.Position
 import io.github.sceneview.math.Rotation
 import io.github.sceneview.math.Scale
 import io.github.sceneview.node.ModelNode
-import io.github.sceneview.rememberCameraNode
-import io.github.sceneview.rememberEngine
-import io.github.sceneview.rememberModelLoader
-import io.github.sceneview.rememberNodes
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -70,11 +58,13 @@ import kotlin.math.sin
  * High-fidelity 3D Avatar Viewport for King Ramses II & Custom Rigged .GLB Models.
  *
  * Features:
- * - Loads custom user-imported .glb files (with full Skeletal Armature animation playback)
- *   or built-in Ramses.final.glb.
+ * - Verifies GLES 3.0 + native Filament support before mounting `Engine`, falling back
+ *   gracefully on unsupported/headless devices without crashing.
+ * - Defers `Engine` creation by one frame and explicitly destroys `ModelNode` native
+ *   entities prior to `engine.destroy()` to prevent concurrent EGL context exhaustion
+ *   and `PANIC in filament::FEngine::shutdown`.
  * - Real-time GPU Morph Target lip-sync driven by Gemini Live 24kHz PCM audio RMS.
  * - Optional interactive Rig Skeleton Bone Lines ("خطوط الـ Rig") live overlay.
- * - Clipped graphicsLayer to prevent SurfaceView BLASTBufferQueue resize artifacts.
  */
 @Composable
 fun RamsesAvatar3DView(
@@ -90,18 +80,23 @@ fun RamsesAvatar3DView(
     onToggleAutoSpeak: () -> Unit = {},
     isAutoSpeakEnabled: Boolean = true,
     showBackgroundGradient: Boolean = true,
+    pureBlackBackground: Boolean = false,
+    sceneSlot: String = "main",
     verticalOffset: Float = 0f
 ) {
-    val engine = rememberEngine()
-    val modelLoader = rememberModelLoader(engine = engine)
-    val cameraNode = rememberCameraNode(engine = engine)
-    val childNodes = rememberNodes()
+    val context = LocalContext.current
+    val sharedResources = remember(context) {
+        if (isFilament3DSupported(context)) getOrCreateSharedFilamentResources(context) else null
+    }
+    var mount3DEngine by remember { mutableStateOf(false) }
+    var userRotationY by remember { mutableFloatStateOf(0f) }
 
-    var currentModelNode by remember { mutableStateOf<ModelNode?>(null) }
-    var isLoading by remember { mutableStateOf(true) }
-
-    val baseRotationY = rigConfig.modelRotationY
-    val baseScale = rigConfig.modelScale
+    LaunchedEffect(sharedResources) {
+        if (sharedResources != null) {
+            awaitSafeFilamentEngineMount()
+            mount3DEngine = true
+        }
+    }
 
     // Multi-track continuous animations for lifelike presence
     val infiniteTransition = rememberInfiniteTransition(label = "ramses_avatar_dynamics")
@@ -139,173 +134,76 @@ fun RamsesAvatar3DView(
         label = "avatar_nod"
     )
 
-    // Reload 3D model whenever customModelPath changes
-    LaunchedEffect(rigConfig.customModelPath) {
-        isLoading = true
-        childNodes.clear()
-        currentModelNode = null
-
-        var loadedInstance: io.github.sceneview.model.ModelInstance? = null
-
-        // 1. Try loading user-imported custom .glb file first if configured
-        val customPath = rigConfig.customModelPath
-        if (!customPath.isNullOrBlank()) {
-            try {
-                val byteBuffer = withContext(Dispatchers.IO) {
-                    val f = File(customPath)
-                    if (f.exists() && f.length() > 16L) {
-                        val bytes = f.readBytes()
-                        ByteBuffer.allocateDirect(bytes.size)
-                            .order(ByteOrder.nativeOrder())
-                            .apply {
-                                put(bytes)
-                                rewind()
-                            }
-                    } else {
-                        null
-                    }
-                }
-                if (byteBuffer != null) {
-                    loadedInstance = modelLoader.createModelInstance(byteBuffer)
-                }
-            } catch (_: Exception) {
-                loadedInstance = null
-            }
+    val containerModifier = when {
+        pureBlackBackground -> {
+            modifier
+                .fillMaxWidth()
+                .background(Color.Black)
         }
-
-        // 2. Fallback to built-in Ramses.final.glb
-        if (loadedInstance == null) {
-            try {
-                loadedInstance = modelLoader.createModelInstance(assetFileLocation = "models/Ramses.final.glb")
-            } catch (_: Exception) {
-                loadedInstance = null
-            }
+        showBackgroundGradient -> {
+            modifier
+                .fillMaxWidth()
+                .graphicsLayer { clip = true }
+                .clip(RoundedCornerShape(bottomStart = 24.dp, bottomEnd = 24.dp))
+                .background(Color.Black)
         }
-
-        if (loadedInstance != null) {
-            try {
-                val node = ModelNode(
-                    modelInstance = loadedInstance,
-                    scaleToUnits = baseScale
-                )
-                node.centerOrigin(Position(0f, 0f, 0f))
-                node.rotation = Rotation(x = 0f, y = baseRotationY, z = 0f)
-                node.position = Position(x = 0f, y = -0.02f + verticalOffset, z = 0f)
-                node.scale = Scale(baseScale, baseScale, baseScale)
-
-                // Play embedded glTF Skeletal Armature animations automatically if present (e.g. Mixamo / AccuRIG / Blender)
-                try {
-                    if (node.animationCount > 0) {
-                        node.playAnimation(0, loop = true)
-                    }
-                } catch (_: Exception) {}
-
-                // Initialize morph targets to 0 if available
-                try {
-                    node.setMorphWeights(floatArrayOf(0f, 0f), 0)
-                    node.renderableNodes.forEach {
-                        it.setMorphWeights(floatArrayOf(0f, 0f), 0)
-                    }
-                } catch (_: Exception) {}
-
-                currentModelNode = node
-                childNodes.add(node)
-            } catch (_: Exception) {}
+        else -> {
+            modifier
+                .fillMaxWidth()
+                .background(Color.Black)
         }
-
-        isLoading = false
-    }
-
-    // Dynamic real-time transform updates: mouth lip-sync, hand gesture, skeletal animation speed & majestic breathing
-    LaunchedEffect(
-        isSpeaking,
-        isListening,
-        isThinking,
-        rmsDb,
-        breathingPhase,
-        speechSyllableCycle,
-        speechNodCycle,
-        baseRotationY,
-        baseScale,
-        rigConfig.lipSyncIntensity,
-        rigConfig.gestureIntensity
-    ) {
-        currentModelNode?.let { node ->
-            val idleSwayY = sin(breathingPhase * 0.4f) * 0.45f
-            val idleElevationY = -0.02f + (sin(breathingPhase) * 0.004f)
-
-            // 1. Real 3D Mouth Lip-Sync driven by Gemini Live audio RMS + syllable cadence
-            val mouthAperture = if (isSpeaking) {
-                val syllablePulse = (sin(speechSyllableCycle) + 1f) * 0.5f
-                val normalizedRms = (rmsDb.coerceIn(0f, 15f) / 15f)
-                val rawAperture = if (normalizedRms > 0.05f) {
-                    (normalizedRms * 0.72f) + (syllablePulse * 0.35f)
-                } else {
-                    syllablePulse * 0.75f
-                }
-                (rawAperture * rigConfig.lipSyncIntensity).coerceIn(0.10f, 1.0f)
-            } else {
-                0f
-            }
-
-            // 2. Real 3D Hand Gesture
-            val handToChin = if (isSpeaking) {
-                val nodCycle = sin(speechNodCycle) * 0.12f
-                ((0.86f + nodCycle) * rigConfig.gestureIntensity).coerceIn(0f, 1.0f)
-            } else if (isThinking) {
-                (0.80f * rigConfig.gestureIntensity).coerceIn(0f, 1.0f)
-            } else {
-                0f
-            }
-
-            try {
-                node.setMorphWeights(floatArrayOf(mouthAperture, handToChin), 0)
-                node.renderableNodes.forEach { rNode ->
-                    rNode.setMorphWeights(floatArrayOf(mouthAperture, handToChin), 0)
-                }
-            } catch (_: Exception) {}
-
-            val speechForwardTilt = if (isSpeaking) 0.9f * rigConfig.gestureIntensity.coerceAtMost(1.3f) else 0f
-            val totalY = (baseRotationY + idleSwayY) % 360f
-
-            node.rotation = Rotation(x = speechForwardTilt, y = totalY, z = 0f)
-            node.position = Position(x = 0f, y = idleElevationY + verticalOffset, z = 0f)
-            node.scale = Scale(baseScale, baseScale, baseScale)
-        }
-    }
-
-    val containerModifier = if (showBackgroundGradient) {
-        modifier
-            .fillMaxWidth()
-            .graphicsLayer { clip = true }
-            .clip(RoundedCornerShape(bottomStart = 24.dp, bottomEnd = 24.dp))
-            .background(
-                brush = Brush.verticalGradient(
-                    colors = listOf(
-                        Color(0xFF040816),
-                        Color(0xFF071126),
-                        Color(0xFF0B1B3D),
-                        Color(0xFF050B18)
-                    )
-                )
-            )
-    } else {
-        modifier
-            .fillMaxWidth()
-            .graphicsLayer { clip = true }
     }
 
     val jawJoint = rigConfig.findJoint("jaw_mouth")
 
-    Box(modifier = containerModifier) {
-        // 1. The 3D Filament SceneView
-        Scene(
-            modifier = Modifier.fillMaxSize(),
-            engine = engine,
-            modelLoader = modelLoader,
-            cameraNode = cameraNode,
-            childNodes = childNodes
-        )
+    Box(
+        modifier = containerModifier
+            .testTag("ramses_3d_avatar_viewport")
+            .pointerInput(Unit) {
+                detectHorizontalDragGestures { change, dragAmount ->
+                    change.consume()
+                    userRotationY = (userRotationY + dragAmount * 0.55f) % 360f
+                }
+            }
+    ) {
+        // 1. The 3D Filament SceneView (or Royal 2D Fallback if GLES 3.0 / Filament unavailable)
+        if (sharedResources != null) {
+            if (mount3DEngine) {
+                FilamentAvatarViewport(
+                    shared = sharedResources,
+                    isSpeaking = isSpeaking,
+                    isThinking = isThinking,
+                    rmsDb = rmsDb,
+                    rigConfig = rigConfig,
+                    breathingPhase = breathingPhase,
+                    speechSyllableCycle = speechSyllableCycle,
+                    speechNodCycle = speechNodCycle,
+                    verticalOffset = verticalOffset,
+                    userRotationY = userRotationY,
+                    pureBlackBackground = pureBlackBackground,
+                    sceneSlot = sceneSlot
+                )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .then(if (pureBlackBackground) Modifier.background(Color.Black) else Modifier),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(38.dp),
+                        color = RoyalGold,
+                        strokeWidth = 3.dp
+                    )
+                }
+            }
+        } else {
+            Pharaonic3DFallbackEmblem(
+                modifier = Modifier.fillMaxSize(),
+                appLanguage = appLanguage,
+                pureBlackBackground = pureBlackBackground
+            )
+        }
 
         // 2. Live Rig Skeleton Bone Lines Overlay ("خطوط الـ Rig") if enabled by user
         if (rigConfig.showSkeletonLinesOnAvatar) {
@@ -406,40 +304,174 @@ fun RamsesAvatar3DView(
                 )
             }
         }
+    }
+}
 
-        // 4. Quick Rig Studio & .GLB File Import Shortcut Pill
-        if (onOpenRigStudio != null) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(10.dp)
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(Color(0x99081226))
-                    .border(1.dp, RoyalGold.copy(alpha = 0.55f), RoundedCornerShape(14.dp))
-                    .clickable { onOpenRigStudio() }
-                    .padding(horizontal = 10.dp, vertical = 6.dp)
-                    .testTag("open_rig_studio_pill")
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Default.AccountTree,
-                        contentDescription = null,
-                        tint = RoyalGoldLight,
-                        modifier = Modifier.size(14.dp)
-                    )
-                    Spacer(modifier = Modifier.width(5.dp))
-                    Text(
-                        text = if (appLanguage == AppLanguage.ARABIC) "الـ Rig + ملف 3D" else "Rig + .GLB",
-                        fontFamily = AmiriFontFamily,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 11.sp,
-                        color = RoyalGoldLight
+@Composable
+private fun FilamentAvatarViewport(
+    shared: SharedFilamentResources,
+    isSpeaking: Boolean,
+    isThinking: Boolean,
+    rmsDb: Float,
+    rigConfig: AvatarRigConfig,
+    breathingPhase: Float,
+    speechSyllableCycle: Float,
+    speechNodCycle: Float,
+    verticalOffset: Float,
+    userRotationY: Float,
+    pureBlackBackground: Boolean = false,
+    sceneSlot: String = "main"
+) {
+    var currentModelNode by remember { mutableStateOf<ModelNode?>(null) }
+    var isLoading by remember { mutableStateOf(true) }
+
+    val baseRotationY = rigConfig.modelRotationY
+    val baseScale = rigConfig.modelScale
+
+    DisposableEffect(Unit) {
+        onDispose {
+            currentModelNode = null
+        }
+    }
+
+    // Load or retrieve cached 3D model node cleanly without destroying shared Filament assets
+    LaunchedEffect(rigConfig.customModelPath) {
+        isLoading = true
+        currentModelNode = null
+
+        var resolvedNode: ModelNode? = null
+
+        // 1. Try loading user-imported custom .glb file first if configured
+        val customPath = rigConfig.customModelPath
+        if (!customPath.isNullOrBlank()) {
+            try {
+                val filePayload = withContext(Dispatchers.IO) {
+                    val f = File(customPath)
+                    if (f.exists() && f.length() in 17L..(64L * 1024L * 1024L)) {
+                        val bytes = f.readBytes()
+                        val buf = ByteBuffer.allocateDirect(bytes.size)
+                            .order(ByteOrder.nativeOrder())
+                            .apply {
+                                put(bytes)
+                                rewind()
+                            }
+                        f.lastModified() to buf
+                    } else {
+                        null
+                    }
+                }
+                if (filePayload != null) {
+                    resolvedNode = shared.getOrLoadCustomBufferNode(
+                        customPath = customPath,
+                        lastModified = filePayload.first,
+                        byteBuffer = filePayload.second,
+                        initialScale = baseScale,
+                        slotKey = sceneSlot
                     )
                 }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Throwable) {
+                resolvedNode = null
             }
         }
 
-        // Loading spinner
+        // 2. Fallback to built-in Ramses.final.glb (instant 0ms cache hit after first load)
+        if (resolvedNode == null) {
+            resolvedNode = shared.getOrLoadAssetNode(
+                assetPath = "models/Ramses.final.glb",
+                initialScale = baseScale,
+                slotKey = sceneSlot
+            )
+        }
+
+        if (resolvedNode != null) {
+            try {
+                resolvedNode.rotation = Rotation(
+                    x = 0f,
+                    y = (baseRotationY + userRotationY) % 360f,
+                    z = 0f
+                )
+                resolvedNode.position = Position(x = 0f, y = -0.02f + verticalOffset, z = 0f)
+                resolvedNode.scale = Scale(baseScale, baseScale, baseScale)
+                safeApplyMorphWeights(shared.engine, resolvedNode, floatArrayOf(0f, 0f))
+                currentModelNode = resolvedNode
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Throwable) {}
+        }
+
+        isLoading = false
+    }
+
+    // Dynamic real-time transform updates: mouth lip-sync, hand gesture, and horizontal-only rotation (no up/down tilt)
+    LaunchedEffect(
+        currentModelNode,
+        isSpeaking,
+        isThinking,
+        rmsDb,
+        breathingPhase,
+        speechSyllableCycle,
+        speechNodCycle,
+        baseRotationY,
+        userRotationY,
+        baseScale,
+        rigConfig.lipSyncIntensity,
+        rigConfig.gestureIntensity,
+        verticalOffset
+    ) {
+        currentModelNode?.let { node ->
+            val idleSwayY = sin(breathingPhase * 0.4f) * 0.45f
+
+            val mouthAperture = if (isSpeaking) {
+                val syllablePulse = (sin(speechSyllableCycle) + 1f) * 0.5f
+                val normalizedRms = (rmsDb.coerceIn(0f, 15f) / 15f)
+                val rawAperture = if (normalizedRms > 0.05f) {
+                    (normalizedRms * 0.72f) + (syllablePulse * 0.35f)
+                } else {
+                    syllablePulse * 0.75f
+                }
+                (rawAperture * rigConfig.lipSyncIntensity).coerceIn(0.10f, 1.0f)
+            } else {
+                0f
+            }
+
+            val handToChin = if (isSpeaking) {
+                val nodCycle = sin(speechNodCycle) * 0.12f
+                ((0.86f + nodCycle) * rigConfig.gestureIntensity).coerceIn(0f, 1.0f)
+            } else if (isThinking) {
+                (0.80f * rigConfig.gestureIntensity).coerceIn(0f, 1.0f)
+            } else {
+                0f
+            }
+
+            safeApplyMorphWeights(shared.engine, node, floatArrayOf(mouthAperture, handToChin))
+
+            try {
+                val totalY = (baseRotationY + userRotationY + idleSwayY) % 360f
+                node.rotation = Rotation(x = 0f, y = totalY, z = 0f)
+                node.position = Position(x = 0f, y = -0.02f + verticalOffset, z = 0f)
+                node.scale = Scale(baseScale, baseScale, baseScale)
+            } catch (_: Throwable) {}
+        }
+    }
+
+    val activeNodes = remember(currentModelNode) {
+        currentModelNode?.let { listOf(it) } ?: emptyList()
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .then(if (pureBlackBackground) Modifier.background(Color.Black) else Modifier)
+    ) {
+        SafeFilamentScene(
+            modifier = Modifier.fillMaxSize(),
+            shared = shared,
+            childNodes = activeNodes,
+            pureBlackBackground = pureBlackBackground
+        )
+
         if (isLoading) {
             Box(
                 modifier = Modifier.fillMaxSize(),

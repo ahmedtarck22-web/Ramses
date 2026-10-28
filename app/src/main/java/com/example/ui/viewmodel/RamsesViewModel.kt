@@ -51,8 +51,11 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import android.util.Base64
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
+import java.io.File
 import java.util.UUID
 
 class RamsesViewModel(application: Application) : AndroidViewModel(application) {
@@ -68,9 +71,18 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
         prefs = prefs
     )
 
-    private val authManager by lazy { FirebaseAuthManager.getInstance(application) }
-    private val firestoreRepo by lazy { FirestoreChatRepository.getInstance(application) }
-    private val cloudRagRepo by lazy { FirestoreRagRepository(application) }
+    private val authManager by lazy {
+        com.example.firebase.ensureFirebaseInitialized(application)
+        FirebaseAuthManager.getInstance(application)
+    }
+    private val firestoreRepo by lazy {
+        com.example.firebase.ensureFirebaseInitialized(application)
+        FirestoreChatRepository.getInstance(application)
+    }
+    private val cloudRagRepo by lazy {
+        com.example.firebase.ensureFirebaseInitialized(application)
+        FirestoreRagRepository(application)
+    }
     private val pdfCloudConverter by lazy {
         PdfToCloudRagConverter(application.applicationContext, cloudRagRepo)
     }
@@ -93,6 +105,10 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
 
     // Sessions List
     val sessions: StateFlow<List<ChatSession>> = chatDao.getAllSessions()
+        .catch { e ->
+            Log.e("RamsesVM", "Room getAllSessions error: ${e.message}", e)
+            emit(emptyList())
+        }
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     // Messages for Current Session
@@ -101,6 +117,10 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
 
     // RAG Documents List (Eagerly loaded so sendMessage & Gemini Live have 0ms access)
     val ragDocuments: StateFlow<List<RagDocument>> = ragDao.getAllDocuments()
+        .catch { e ->
+            Log.e("RamsesVM", "Room getAllDocuments error: ${e.message}", e)
+            emit(emptyList())
+        }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     // Vertex AI / Gemini File Search & Google Cloud Storage 5-PDF Pipeline State
@@ -170,8 +190,10 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
     private val _isVoiceTyping = MutableStateFlow(false)
     val isVoiceTyping: StateFlow<Boolean> = _isVoiceTyping.asStateFlow()
 
-    // 3D Avatar Split View mode (Top half 3D avatar, Bottom half text conversation)
-    private val _is3DViewMode = MutableStateFlow(true)
+    // 3D Avatar Split View mode (synchronized with selected Gem: RAMSES -> 3D Split, GEMINI_DEFAULT -> Full Chat)
+    private val _is3DViewMode = MutableStateFlow(
+        (prefs.getString("selected_gem", "RAMSES") ?: "RAMSES") == "RAMSES"
+    )
     val is3DViewMode: StateFlow<Boolean> = _is3DViewMode.asStateFlow()
 
     // Auto-speak responses in 3D Avatar mode so Ramses speaks with lipsync and body movement
@@ -190,17 +212,52 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
     private val _streamingMessage = MutableStateFlow<ChatMessage?>(null)
     val streamingMessage: StateFlow<ChatMessage?> = _streamingMessage.asStateFlow()
 
-    // User authentication profile state (strictly derived from verified FirebaseAuth session)
-    private val _userProfile = MutableStateFlow(
-        authManager.currentUser.value?.let { user ->
+    private fun resolveEffectiveUserProfile(): UserProfile {
+        val firebaseUser = authManager.currentUser.value
+        val customAvatarPath = prefs.getString("custom_user_avatar_path", null)
+            ?.takeIf { it.isNotBlank() && File(it).exists() }
+        val customDisplayName = prefs.getString("custom_user_display_name", null)
+            ?.trim()
+            ?.takeIf { it.isNotBlank() }
+        val googlePhotoUrl = firebaseUser?.photoUrl?.toString()
+            ?: firebaseUser?.providerData?.firstNotNullOfOrNull { it.photoUrl?.toString() }
+        val effectiveAvatar = customAvatarPath ?: googlePhotoUrl
+        val hasApiKey = GeminiApiClient.sanitizeApiKey(_customApiKey.value).isNotBlank()
+
+        return if (firebaseUser != null) {
             UserProfile(
-                email = user.email,
-                displayName = user.displayName ?: prefs.getString("user_display_name", "مستخدم مسجل") ?: "مستخدم مسجل",
+                email = firebaseUser.email,
+                displayName = customDisplayName
+                    ?: firebaseUser.displayName
+                    ?: prefs.getString("user_display_name", "مستخدم مسجل")
+                    ?: "مستخدم مسجل",
                 provider = AuthProvider.GOOGLE,
                 isSignedIn = true,
-                avatarUrl = user.photoUrl?.toString()
+                avatarUrl = effectiveAvatar
             )
-        } ?: UserProfile(
+        } else if (hasApiKey || customAvatarPath != null || customDisplayName != null) {
+            UserProfile(
+                email = null,
+                displayName = customDisplayName
+                    ?: if (_appLanguage.value == AppLanguage.ARABIC) "مستخدم Gemini API" else "Gemini API User",
+                provider = AuthProvider.GUEST,
+                isSignedIn = false,
+                avatarUrl = effectiveAvatar
+            )
+        } else {
+            UserProfile(
+                email = null,
+                displayName = if (_appLanguage.value == AppLanguage.ARABIC) "زائر ملكي" else "Royal Guest",
+                provider = AuthProvider.GUEST,
+                isSignedIn = false,
+                avatarUrl = null
+            )
+        }
+    }
+
+    // User authentication & local/API profile state
+    private val _userProfile = MutableStateFlow(
+        UserProfile(
             email = null,
             displayName = if (prefs.getString("app_language", "AR") == "EN") "Royal Guest" else "زائر ملكي",
             provider = AuthProvider.GUEST,
@@ -223,7 +280,7 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
 
     // Selected Gem Persona: "RAMSES", "GEMINI_DEFAULT", "CODE", "WRITER"
     private val _selectedGem = MutableStateFlow(
-        prefs.getString("selected_gem", "GEMINI_DEFAULT") ?: "GEMINI_DEFAULT"
+        prefs.getString("selected_gem", "RAMSES") ?: "RAMSES"
     )
     val selectedGem: StateFlow<String> = _selectedGem.asStateFlow()
 
@@ -233,11 +290,14 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
     private var cloudFoldersListenerJob: Job? = null
 
     init {
-        _customApiKey.value = SecureKeyStoreHelper.readEncryptedPref(
-            prefs = prefs,
-            encryptedKey = "custom_gemini_key_enc",
-            legacyPlainKey = "custom_gemini_key"
+        _customApiKey.value = GeminiApiClient.sanitizeApiKey(
+            SecureKeyStoreHelper.readEncryptedPref(
+                prefs = prefs,
+                encryptedKey = "custom_gemini_key_enc",
+                legacyPlainKey = "custom_gemini_key"
+            )
         )
+        _userProfile.value = resolveEffectiveUserProfile()
         _isSearchGroundingEnabled.value = prefs.getBoolean("search_grounding", false)
         GeminiApiClient.preferredModel = _selectedModel.value
 
@@ -256,30 +316,18 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
             authManager.currentUser.collect { user ->
                 if (user != null) {
                     val resolvedName = user.displayName ?: "مستخدم مسجل"
-                    _userProfile.value = UserProfile(
-                        email = user.email,
-                        displayName = resolvedName,
-                        provider = AuthProvider.GOOGLE,
-                        isSignedIn = true,
-                        avatarUrl = user.photoUrl?.toString()
-                    )
                     prefs.edit()
                         .putString("user_display_name", resolvedName)
                         .putString("user_provider", "GOOGLE")
                         .remove("user_is_signed_in")
                         .apply()
+                    _userProfile.value = resolveEffectiveUserProfile()
                     firestoreRepo.syncUserProfile(user)
                     startCloudRagListeners()
                     syncFiveBooksToCloudFirebase()
                 } else {
                     stopCloudRagListenersAndUseBundledSeed()
-                    val guestName = if (_appLanguage.value == AppLanguage.ARABIC) "زائر ملكي" else "Royal Guest"
-                    _userProfile.value = UserProfile(
-                        email = null,
-                        displayName = guestName,
-                        provider = AuthProvider.GUEST,
-                        isSignedIn = false
-                    )
+                    _userProfile.value = resolveEffectiveUserProfile()
                 }
             }
         }
@@ -377,6 +425,12 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
             }
         }
 
+        speechHelper.onPartialSpeech = { partial ->
+            if (_isGeminiLiveActive.value && _usingFallbackLocalVoice.value && partial.isNotBlank()) {
+                _currentVoiceTranscript.value = partial
+            }
+        }
+
         speechHelper.onEndOfSpeechDetected = {
             if (_isGeminiLiveActive.value && _usingFallbackLocalVoice.value && _voiceCallState.value == VoiceCallState.LISTENING) {
                 _voiceCallState.value = VoiceCallState.THINKING
@@ -388,19 +442,31 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
             if (_isVoiceTyping.value) {
                 _isVoiceTyping.value = false
             }
+            val isRecoverable = errorCode == android.speech.SpeechRecognizer.ERROR_NO_MATCH ||
+                errorCode == android.speech.SpeechRecognizer.ERROR_SPEECH_TIMEOUT ||
+                errorCode == android.speech.SpeechRecognizer.ERROR_NETWORK ||
+                errorCode == android.speech.SpeechRecognizer.ERROR_NETWORK_TIMEOUT ||
+                errorCode == android.speech.SpeechRecognizer.ERROR_AUDIO ||
+                errorCode == android.speech.SpeechRecognizer.ERROR_SERVER ||
+                errorCode == android.speech.SpeechRecognizer.ERROR_RECOGNIZER_BUSY
+
             if (_isGeminiLiveActive.value && _usingFallbackLocalVoice.value) {
-                viewModelScope.launch {
-                    delay(450)
-                    if (
-                        _isGeminiLiveActive.value &&
-                        _usingFallbackLocalVoice.value &&
-                        _voiceCallState.value != VoiceCallState.SPEAKING &&
-                        !ttsHelper.isSpeaking.value
-                    ) {
-                        _voiceCallState.value = VoiceCallState.LISTENING
-                        val langTag = if (_appLanguage.value == AppLanguage.ENGLISH) "en-US" else "ar-EG"
-                        speechHelper.startListening(langTag)
+                if (isRecoverable) {
+                    viewModelScope.launch {
+                        delay(650)
+                        if (
+                            _isGeminiLiveActive.value &&
+                            _usingFallbackLocalVoice.value &&
+                            _voiceCallState.value != VoiceCallState.SPEAKING &&
+                            !ttsHelper.isSpeaking.value
+                        ) {
+                            _voiceCallState.value = VoiceCallState.LISTENING
+                            val langTag = if (_appLanguage.value == AppLanguage.ENGLISH) "en-US" else "ar-EG"
+                            speechHelper.startListening(langTag)
+                        }
                     }
+                } else {
+                    _voiceCallState.value = VoiceCallState.IDLE
                 }
             }
         }
@@ -452,19 +518,32 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
     private fun observeMessagesForSession(sessionId: String) {
         messageCollectorJob?.cancel()
         messageCollectorJob = viewModelScope.launch {
-            chatDao.getMessagesForSession(sessionId).collect { entities ->
-                _messages.value = entities.map { entity ->
-                    ChatMessage(
-                        id = entity.id,
-                        sender = if (entity.sender == "USER") MessageSender.USER else MessageSender.RAMSES,
-                        text = entity.text,
-                        timestamp = entity.timestamp,
-                        groundingSources = GroundingSource.fromJsonString(entity.groundingSourcesJson),
-                        isVoiceResponse = entity.isVoiceResponse,
-                        isError = entity.isError
-                    )
+            chatDao.getMessagesForSession(sessionId)
+                .catch { e ->
+                    Log.e("RamsesVM", "Room getMessagesForSession error: ${e.message}", e)
+                    emit(emptyList())
                 }
-            }
+                .collect { entities ->
+                    val mapped = entities.map { entity ->
+                        ChatMessage(
+                            id = entity.id,
+                            sender = if (entity.sender == "USER") MessageSender.USER else MessageSender.RAMSES,
+                            text = entity.text,
+                            timestamp = entity.timestamp,
+                            imageBase64 = entity.imageBase64,
+                            groundingSources = GroundingSource.fromJsonString(entity.groundingSourcesJson),
+                            isVoiceResponse = entity.isVoiceResponse,
+                            isError = entity.isError,
+                            responderPersona = entity.responderPersona
+                        )
+                    }.distinctBy { it.id }
+
+                    val currentStreamId = _streamingMessage.value?.id
+                    if (currentStreamId != null && mapped.any { "streaming_${it.id}" == currentStreamId || it.id == currentStreamId }) {
+                        _streamingMessage.value = null
+                    }
+                    _messages.value = mapped
+                }
         }
     }
 
@@ -854,10 +933,52 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun selectGem(gemId: String) {
+        runCatching { ttsHelper.stop() }
+        stopVoiceTyping()
         _selectedGem.value = gemId
         prefs.edit().putString("selected_gem", gemId).apply()
-        _is3DViewMode.value = (gemId == "RAMSES")
+        val target3D = (gemId == "RAMSES")
+        if (_is3DViewMode.value != target3D) {
+            _is3DViewMode.value = target3D
+        }
         startNewSession()
+    }
+
+    private fun encodeBitmapForChatBubble(bitmap: Bitmap?, maxDim: Int = 720): String? {
+        if (bitmap == null || bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) return null
+        return try {
+            val soft = if (
+                android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O &&
+                bitmap.config == Bitmap.Config.HARDWARE
+            ) {
+                bitmap.copy(Bitmap.Config.ARGB_8888, false) ?: return null
+            } else {
+                bitmap
+            }
+            val scaled = if (soft.width > maxDim || soft.height > maxDim) {
+                val ratio = minOf(maxDim.toFloat() / soft.width.toFloat(), maxDim.toFloat() / soft.height.toFloat())
+                Bitmap.createScaledBitmap(
+                    soft,
+                    (soft.width * ratio).toInt().coerceAtLeast(1),
+                    (soft.height * ratio).toInt().coerceAtLeast(1),
+                    true
+                )
+            } else {
+                soft
+            }
+            val out = ByteArrayOutputStream()
+            scaled.compress(Bitmap.CompressFormat.JPEG, 76, out)
+            Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+        } catch (t: Throwable) {
+            Log.w("RamsesVM", "Failed encoding attached image for bubble: ${t.message}")
+            null
+        }
+    }
+
+    private fun isSeededEgyptologyDoc(doc: RagDocument): Boolean {
+        return doc.title.startsWith("معاهدة السلام المصرية الحيثية") ||
+            doc.title.startsWith("معبد أبو سمبل وتعامد الشمس") ||
+            doc.title.startsWith("المدينة العاصمة بر-رعمسيس")
     }
 
     // --- Ultra-Fast Sub-Second Message Streaming ---
@@ -876,12 +997,28 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
 
         val sessionId = _currentSessionId.value
         val userText = trimmed.ifEmpty {
-            if (_appLanguage.value == AppLanguage.ARABIC) "حلل هذه الصورة الملكية" else "Analyze this royal image"
+            if (_appLanguage.value == AppLanguage.ARABIC) "حلّل هذه الصورة بدقة وتفصيل" else "Analyze this image accurately and in detail"
         }
+
+        val queryDomain = GeminiApiClient.classifyQueryDomain(
+            prompt = userText,
+            selectedGem = _selectedGem.value,
+            hasImage = image != null
+        )
+        val effectivePersona = when (queryDomain) {
+            GeminiApiClient.Companion.QueryDomain.HISTORICAL_RAMSES -> "RAMSES"
+            GeminiApiClient.Companion.QueryDomain.TECHNICAL_MODERN -> "CODE"
+            GeminiApiClient.Companion.QueryDomain.GENERAL_GEMINI ->
+                if (_selectedGem.value == "WRITER") "WRITER" else "GEMINI_DEFAULT"
+        }
+
+        val encodedUserImage = encodeBitmapForChatBubble(image)
 
         val now = System.currentTimeMillis()
         val historySnapshot = _messages.value
-        val activeRagDocs = ragDocuments.value.filter { it.isEnabled }
+        val activeRagDocs = ragDocuments.value.filter { doc ->
+            doc.isEnabled && (queryDomain == GeminiApiClient.Companion.QueryDomain.HISTORICAL_RAMSES || !isSeededEgyptologyDoc(doc))
+        }
         val uid = authManager.currentUser.value?.uid
 
         _selectedImageBitmap.value = null
@@ -890,28 +1027,31 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
             _voiceCallState.value = VoiceCallState.THINKING
         }
 
-        // Optimistically display user message immediately + prepare streaming bubble at t = 0ms!
+        // Optimistically display user message immediately (with imageBase64 above analysis!) + prepare streaming bubble
         val userEntity = ChatMessageEntity(
             sessionId = sessionId,
             sender = "USER",
             text = userText,
-            timestamp = now
+            timestamp = now,
+            imageBase64 = encodedUserImage
         )
         _messages.value = historySnapshot + ChatMessage(
             id = userEntity.id,
             sender = MessageSender.USER,
             text = userText,
-            timestamp = now
+            timestamp = now,
+            imageBase64 = encodedUserImage
         )
 
         val tempRamsesId = UUID.randomUUID().toString()
         _streamingMessage.value = ChatMessage(
-            id = tempRamsesId,
+            id = "streaming_$tempRamsesId",
             sender = MessageSender.RAMSES,
             text = "",
             timestamp = now + 1L,
             isVoiceResponse = isVoice,
-            isError = false
+            isError = false,
+            responderPersona = effectivePersona
         )
 
         // Persist user message & session metadata in background without delaying HTTP SSE stream!
@@ -944,26 +1084,32 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
                 val onStreamChunk: suspend (String) -> Unit = { chunk ->
                     currentLiveChunk = chunk
                     val elapsed = SystemClock.uptimeMillis() - lastUiEmitMs
-                    // Smooth ~24ms frame pacing avoids SurfaceView layout thrashing while feeling instantaneous
                     if (elapsed >= 24L || lastUiEmitMs == 0L) {
                         lastUiEmitMs = SystemClock.uptimeMillis()
                         _streamingMessage.value = _streamingMessage.value?.copy(text = chunk)
                     }
                 }
 
-                // Stage 1 & 2 Small-Folder -> Cited-Chunk Retrieval from Cloud Firebase (or compressed 5-book seed)
-                val retrievedPassages = cloudRagRepo.retrieveRelevantPassages(
-                    query = userText,
-                    cachedCloudFolders = _cloudRagFolders.value,
-                    topFoldersLimit = if (isVoice) 3 else 6,
-                    topChunksLimit = if (isVoice) 2 else 8
-                )
+                // Stage 1 & 2 Small-Folder -> Cited-Chunk Retrieval ONLY for historical/Egyptology or non-technical book queries
+                val retrievedPassages = if (queryDomain == GeminiApiClient.Companion.QueryDomain.TECHNICAL_MODERN ||
+                    (image != null && queryDomain != GeminiApiClient.Companion.QueryDomain.HISTORICAL_RAMSES)
+                ) {
+                    emptyList()
+                } else {
+                    cloudRagRepo.retrieveRelevantPassages(
+                        query = userText,
+                        cachedCloudFolders = _cloudRagFolders.value,
+                        topFoldersLimit = if (isVoice) 3 else 6,
+                        topChunksLimit = if (isVoice) 2 else 8
+                    )
+                }
+
                 val cloudRetrievedDocs = retrievedPassages.map { passage ->
                     RagDocument(
                         id = "cloud_chunk_${passage.chunk.chunkId}",
                         title = passage.toCitationTitle(),
                         content = passage.chunk.content,
-                        category = "سحابة Firebase • ${passage.chunk.pageRange}",
+                        category = "الصفحة: ${passage.chunk.formattedPageNumber()}",
                         isEnabled = true,
                         gcsUri = passage.toCitationUri()
                     )
@@ -976,18 +1122,28 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
                     )
                 }
 
+                // Filter history so prior Pharaonic roleplay turns don't pollute pure coding/Blender answers
+                val filteredHistory = if (queryDomain == GeminiApiClient.Companion.QueryDomain.TECHNICAL_MODERN) {
+                    historySnapshot.filter { it.sender == MessageSender.USER || it.responderPersona != "RAMSES" }
+                } else {
+                    historySnapshot
+                }
+
                 // If a server-side RAG proxy is active and Cloud PDFs are enabled, query through FileSearchOrchestrator first
                 val proxyConfigured = searchInstanceConfig.value.serverProxyBaseUrl.isNotBlank() &&
                     linkedSearchInstance.value?.linkType == SearchLinkType.SERVER_PROXY_INDEX &&
                     combinedRagDocs.any { it.isCloudPdfBook } &&
-                    !isVoice && image == null
+                    !isVoice && image == null &&
+                    queryDomain != GeminiApiClient.Companion.QueryDomain.TECHNICAL_MODERN
 
                 val result = if (proxyConfigured) {
                     val sysInstruction = GeminiApiClient.buildEffectiveSystemInstruction(
-                        gemPersona = _selectedGem.value,
+                        gemPersona = effectivePersona,
                         appLanguage = _appLanguage.value,
                         isVoiceCall = false,
-                        ragContext = emptyList()
+                        ragContext = emptyList(),
+                        prompt = userText,
+                        hasImage = false
                     )
                     val proxyResp = fileSearchOrchestrator.queryLinkedKnowledgeBase(
                         prompt = userText,
@@ -1006,28 +1162,28 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
                     } else {
                         geminiClient.streamRamsesResponse(
                             prompt = userText,
-                            history = historySnapshot,
+                            history = filteredHistory,
                             imageBitmap = image,
                             enableSearchGrounding = _isSearchGroundingEnabled.value,
                             isVoiceCall = isVoice,
                             customApiKey = _customApiKey.value,
                             ragContext = combinedRagDocs,
                             appLanguage = _appLanguage.value,
-                            gemPersona = _selectedGem.value,
+                            gemPersona = effectivePersona,
                             onChunk = onStreamChunk
                         )
                     }
                 } else {
                     geminiClient.streamRamsesResponse(
                         prompt = userText,
-                        history = historySnapshot,
+                        history = filteredHistory,
                         imageBitmap = image,
                         enableSearchGrounding = _isSearchGroundingEnabled.value,
                         isVoiceCall = isVoice,
                         customApiKey = _customApiKey.value,
                         ragContext = combinedRagDocs,
                         appLanguage = _appLanguage.value,
-                        gemPersona = _selectedGem.value,
+                        gemPersona = effectivePersona,
                         onChunk = onStreamChunk
                     )
                 }
@@ -1035,7 +1191,9 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
                 val mergedGroundingSources = (cloudCitations + result.groundingSources)
                     .distinctBy { "${it.title}|${it.uri}" }
 
-                val finalText = if (result.text.isNotBlank()) result.text else currentLiveChunk
+                val finalText = GeminiApiClient.stripHiddenControlTokens(
+                    if (result.text.isNotBlank()) result.text else currentLiveChunk
+                ).trim()
                 val finalEntity = ChatMessageEntity(
                     id = tempRamsesId,
                     sessionId = sessionId,
@@ -1044,7 +1202,8 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
                     timestamp = System.currentTimeMillis(),
                     isVoiceResponse = isVoice,
                     isError = result.isError,
-                    groundingSourcesJson = GroundingSource.toJsonString(mergedGroundingSources)
+                    groundingSourcesJson = GroundingSource.toJsonString(mergedGroundingSources),
+                    responderPersona = effectivePersona
                 )
 
                 _streamingMessage.value = null
@@ -1158,31 +1317,36 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
         _isGeminiLiveActive.value = true
         _currentVoiceTranscript.value = ""
         _liveModelSpeechTranscript.value = ""
-        ttsHelper.stop()
-        speechHelper.stopListening()
+        runCatching { ttsHelper.stop() }
+        runCatching { speechHelper.stopListening() }
 
-        val cloudBookSummaries = _cloudRagBooks.value.take(10).map { book ->
-            RagDocument(
-                id = "live_book_${book.bookId}",
-                title = "${book.title} (${book.author})",
-                content = "${book.eraCategory} — ${book.summary}",
-                category = "مكتبة الكتب المفهرسة (${book.pageCount} ص)",
-                isEnabled = true
+        try {
+            val cloudBookSummaries = _cloudRagBooks.value.take(10).map { book ->
+                RagDocument(
+                    id = "live_book_${book.bookId}",
+                    title = "${book.title} (${book.author})",
+                    content = "${book.eraCategory} — ${book.summary}",
+                    category = "مكتبة الكتب المفهرسة (${book.pageCount} ص)",
+                    isEnabled = true
+                )
+            }
+            val combinedLiveDocs = ragDocuments.value.filter { it.isEnabled } + cloudBookSummaries
+
+            val wsStarted = geminiLiveClient.startSession(
+                customApiKey = _customApiKey.value,
+                appLanguage = _appLanguage.value,
+                gemPersona = _selectedGem.value,
+                ragDocs = combinedLiveDocs
             )
-        }
-        val combinedLiveDocs = ragDocuments.value.filter { it.isEnabled } + cloudBookSummaries
 
-        val wsStarted = geminiLiveClient.startSession(
-            customApiKey = _customApiKey.value,
-            appLanguage = _appLanguage.value,
-            gemPersona = _selectedGem.value,
-            ragDocs = combinedLiveDocs
-        )
-
-        if (wsStarted) {
-            _usingFallbackLocalVoice.value = false
-            _voiceCallState.value = VoiceCallState.THINKING
-        } else {
+            if (wsStarted) {
+                _usingFallbackLocalVoice.value = false
+                _voiceCallState.value = VoiceCallState.THINKING
+            } else {
+                startLocalFallbackVoiceLoop()
+            }
+        } catch (t: Throwable) {
+            Log.e("RamsesVM", "Gemini Live start notice, using safe local voice loop: ${t.message}")
             startLocalFallbackVoiceLoop()
         }
     }
@@ -1192,21 +1356,37 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
         speechHelper.stopListening()
         _voiceCallState.value = VoiceCallState.SPEAKING
         val isEnglish = _appLanguage.value == AppLanguage.ENGLISH
-        val greeting = if (isEnglish) "Greetings, I am listening." else "مرحباً بك، أنا أستمع إليك."
+        val isGeminiGem = _selectedGem.value == "GEMINI_DEFAULT"
+        val greeting = when {
+            isGeminiGem && isEnglish -> "Welcome to Gemini Live! Go ahead, I am listening."
+            isGeminiGem -> "أهلاً بك في Gemini Live! تفضّل بالتحدث، أنا أستمع إليك."
+            isEnglish -> "Greetings, I am King Rameses II. Speak freely, I am listening."
+            else -> "مرحباً بك، أنا الملك رمسيس الثاني أستمع إليك الآن."
+        }
         val langTag = if (isEnglish) "en-US" else "ar-EG"
+        _liveModelSpeechTranscript.value = greeting
 
-        ttsHelper.speak(greeting, languageCode = langTag) {
+        val transitionedToListen = java.util.concurrent.atomic.AtomicBoolean(false)
+        fun beginListeningSafely() {
+            if (!transitionedToListen.compareAndSet(false, true)) return
             viewModelScope.launch {
-                // Allow speaker audio echo to decay completely before starting mic recognition
-                delay(550)
-                if (
-                    _isGeminiLiveActive.value &&
-                    _usingFallbackLocalVoice.value &&
-                    !ttsHelper.isSpeaking.value
-                ) {
+                delay(450)
+                if (_isGeminiLiveActive.value && _usingFallbackLocalVoice.value) {
                     _voiceCallState.value = VoiceCallState.LISTENING
                     speechHelper.startListening(langTag)
                 }
+            }
+        }
+
+        ttsHelper.speak(greeting, languageCode = langTag) {
+            beginListeningSafely()
+        }
+
+        // Safety watchdog in case device OEM TTS engine lacks voice data or delays initialization
+        viewModelScope.launch {
+            delay(4500)
+            if (_isGeminiLiveActive.value && _usingFallbackLocalVoice.value && !ttsHelper.isSpeaking.value) {
+                beginListeningSafely()
             }
         }
     }
@@ -1296,7 +1476,7 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun setCustomApiKey(key: String) {
-        val cleanKey = key.trim()
+        val cleanKey = GeminiApiClient.sanitizeApiKey(key)
         _customApiKey.value = cleanKey
         SecureKeyStoreHelper.saveEncryptedPref(
             prefs = prefs,
@@ -1304,6 +1484,42 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
             legacyPlainKey = "custom_gemini_key",
             plainValue = cleanKey
         )
+        _userProfile.value = resolveEffectiveUserProfile()
+    }
+
+    fun updateLocalUserProfile(displayName: String, avatarUri: Uri? = null) {
+        val trimmedName = displayName.trim()
+        if (trimmedName.isNotEmpty()) {
+            prefs.edit().putString("custom_user_display_name", trimmedName).apply()
+        }
+        if (avatarUri == null) {
+            _userProfile.value = resolveEffectiveUserProfile()
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val app = getApplication<Application>()
+                val destFile = File(app.filesDir, "user_profile_avatar_${System.currentTimeMillis()}.jpg")
+                val copied = app.contentResolver.openInputStream(avatarUri)?.use { input ->
+                    destFile.outputStream().use { output ->
+                        input.copyTo(output)
+                    }
+                    true
+                } ?: false
+                if (copied && destFile.exists() && destFile.length() > 0L) {
+                    val prevPath = prefs.getString("custom_user_avatar_path", null)
+                    if (!prevPath.isNullOrBlank() && prevPath != destFile.absolutePath) {
+                        runCatching { File(prevPath).delete() }
+                    }
+                    prefs.edit().putString("custom_user_avatar_path", destFile.absolutePath).apply()
+                }
+            } catch (e: Exception) {
+                Log.w("RamsesVM", "Could not save profile avatar photo: ${e.message}")
+            }
+            withContext(Dispatchers.Main) {
+                _userProfile.value = resolveEffectiveUserProfile()
+            }
+        }
     }
 
     fun launchGoogleSignIn(activity: Activity, onComplete: (Boolean, String?) -> Unit) {
@@ -1313,13 +1529,7 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
             _isLoading.value = false
             if (result.isSuccess) {
                 val user = result.getOrThrow()
-                _userProfile.value = UserProfile(
-                    email = user.email,
-                    displayName = user.displayName ?: "مستخدم مسجل",
-                    provider = AuthProvider.GOOGLE,
-                    isSignedIn = true,
-                    avatarUrl = user.photoUrl?.toString()
-                )
+                _userProfile.value = resolveEffectiveUserProfile()
                 firestoreRepo.syncUserProfile(user)
                 onComplete(true, null)
             } else {
@@ -1336,12 +1546,11 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
 
     fun signInWithGoogle(email: String = "", name: String = "") {
         val verifiedUser = authManager.currentUser.value ?: return
-        _userProfile.value = UserProfile(
-            email = verifiedUser.email ?: email.ifBlank { null },
-            displayName = verifiedUser.displayName ?: name.ifBlank { "مستخدم Google" },
-            provider = AuthProvider.GOOGLE,
-            isSignedIn = true,
-            avatarUrl = verifiedUser.photoUrl?.toString()
+        if (name.isNotBlank()) {
+            prefs.edit().putString("custom_user_display_name", name.trim()).apply()
+        }
+        _userProfile.value = resolveEffectiveUserProfile().copy(
+            email = verifiedUser.email ?: email.ifBlank { null }
         )
     }
 
@@ -1351,19 +1560,18 @@ class RamsesViewModel(application: Application) : AndroidViewModel(application) 
 
     fun signOut() {
         authManager.signOut()
-        val guest = UserProfile(
-            email = null,
-            displayName = if (_appLanguage.value == AppLanguage.ARABIC) "زائر ملكي" else "Royal Guest",
-            provider = AuthProvider.GUEST,
-            isSignedIn = false
-        )
-        _userProfile.value = guest
+        val prevAvatar = prefs.getString("custom_user_avatar_path", null)
+        if (!prevAvatar.isNullOrBlank()) {
+            runCatching { File(prevAvatar).delete() }
+        }
         prefs.edit()
             .remove("user_email")
-            .putString("user_display_name", guest.displayName)
+            .remove("custom_user_display_name")
+            .remove("custom_user_avatar_path")
             .putString("user_provider", "GUEST")
             .remove("user_is_signed_in")
             .apply()
+        _userProfile.value = resolveEffectiveUserProfile()
     }
 
     override fun onCleared() {

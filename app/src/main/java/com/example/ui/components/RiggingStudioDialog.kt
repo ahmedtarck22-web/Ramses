@@ -711,9 +711,10 @@ private fun InteractiveRigCanvas(
     ) {
         val w = size.width
         val h = size.height
+        if (w <= 1f || h <= 1f) return@Canvas
 
         // 1. Subtle Blueprint Grid + Center Symmetry Axis Line
-        val gridStep = w / 8f
+        val gridStep = (w / 8f).coerceAtLeast(1f)
         var gx = gridStep
         while (gx < w) {
             drawLine(
@@ -724,7 +725,8 @@ private fun InteractiveRigCanvas(
             )
             gx += gridStep
         }
-        var gy = h / 6f
+        val rowStep = (h / 6f).coerceAtLeast(1f)
+        var gy = rowStep
         while (gy < h) {
             drawLine(
                 color = Color(0x1400E5FF),
@@ -732,7 +734,7 @@ private fun InteractiveRigCanvas(
                 end = Offset(w, gy),
                 strokeWidth = 1f
             )
-            gy += h / 6f
+            gy += rowStep
         }
 
         // Center symmetry guide
@@ -769,11 +771,12 @@ private fun InteractiveRigCanvas(
                 cap = StrokeCap.Round
             )
             // Core bone line
+            val gradientEnd = if ((p2 - p1).getDistanceSquared() < 0.01f) p1 + Offset(1f, 1f) else p2
             drawLine(
                 brush = Brush.linearGradient(
                     colors = listOf(RoyalGoldLight, EgyptianCyan),
                     start = p1,
-                    end = p2
+                    end = gradientEnd
                 ),
                 start = p1,
                 end = p2,

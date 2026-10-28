@@ -25,7 +25,9 @@ class FirestoreChatRepository(
 
         fun getInstance(context: Context): FirestoreChatRepository {
             return instance ?: synchronized(this) {
-                val dbId = context.applicationContext.getString(R.string.firestore_database_id)
+                val appCtx = context.applicationContext ?: context
+                com.example.firebase.ensureFirebaseInitialized(appCtx)
+                val dbId = appCtx.getString(R.string.firestore_database_id)
                 val firestore = FirebaseFirestore.getInstance(dbId)
                 instance ?: FirestoreChatRepository(firestore).also { instance = it }
             }

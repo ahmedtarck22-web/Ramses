@@ -34,18 +34,27 @@ import java.util.zip.GZIPInputStream
 class FirestoreRagRepository(
     private val db: FirebaseFirestore,
     private val appContext: Context? = null,
-    private val authProvider: () -> String? = { FirebaseAuth.getInstance().currentUser?.uid }
+    private val authProvider: () -> String? = {
+        runCatching { FirebaseAuth.getInstance().currentUser?.uid }.getOrNull()
+    }
 ) {
     constructor(context: Context) : this(
-        db = FirebaseFirestore.getInstance(
-            context.applicationContext.getString(R.string.firestore_database_id)
-        ),
-        appContext = context.applicationContext
+        db = resolveDefaultFirestore(context),
+        appContext = context.applicationContext ?: context
     )
 
     companion object {
         private const val TAG = "FirestoreRagRepo"
         const val SEED_ASSET_PATH = "rag/ramses_5books_rag.pack"
+
+        private fun resolveDefaultFirestore(context: Context): FirebaseFirestore {
+            val appCtx = context.applicationContext ?: context
+            com.example.firebase.ensureFirebaseInitialized(appCtx)
+            return FirebaseFirestore.getInstance(
+                appCtx.getString(R.string.firestore_database_id)
+            )
+        }
+
         private const val MAX_FOLDER_BATCH_OPS = 15
         private const val MAX_CHUNK_BATCH_OPS = 9
         private const val MAX_DELETE_BATCH_OPS = 380
@@ -870,25 +879,43 @@ class FirestoreRagRepository(
         val rankedFolders = mergedIndexedFolders
             .map { idxF ->
                 var score = 0.0
-                if (normQuery.length >= 4 && (idxF.titleNorm.contains(normQuery) || idxF.summaryNorm.contains(normQuery))) {
+                val exactPhraseHit = normQuery.length >= 4 && (idxF.titleNorm.contains(normQuery) || idxF.summaryNorm.contains(normQuery))
+                if (exactPhraseHit) {
                     score += 8.5
                 }
+                var lexicalHits = 0
                 for (tok in tokens) {
                     val idf = tokenIdf[tok] ?: 1.0
-                    if (idxF.titleNorm.contains(tok)) score += 3.2 * idf
-                    if (idxF.kwNorm.any { it.contains(tok) || tok.contains(it) }) score += 2.9 * idf
-                    if (idxF.summaryNorm.contains(tok)) score += 1.6 * idf
-                    if (idxF.bookNorm.contains(tok)) score += 1.0 * idf
+                    var matchedToken = false
+                    if (idxF.titleNorm.contains(tok)) {
+                        score += 3.2 * idf
+                        matchedToken = true
+                    }
+                    if (idxF.kwNorm.any { it.contains(tok) || tok.contains(it) }) {
+                        score += 2.9 * idf
+                        matchedToken = true
+                    }
+                    if (idxF.summaryNorm.contains(tok)) {
+                        score += 1.6 * idf
+                        matchedToken = true
+                    }
+                    if (idxF.bookNorm.contains(tok)) {
+                        score += 1.0 * idf
+                        matchedToken = true
+                    }
+                    if (matchedToken) lexicalHits++
                 }
                 // Arabic light-stem morphological overlap (catches plurals/possessives/clitics)
                 val stemHits = queryStems.count { it in idxF.stems }
                 if (stemHits > 0) {
                     score += stemHits * 2.1
                 }
-                // Character 3-gram similarity fallback for paraphrased/spelling variants
-                val trigramSim = diceSimilarity(queryTrigrams, idxF.trigrams)
-                if (trigramSim >= 0.18) {
-                    score += trigramSim * 4.5
+                // Character 3-gram similarity bonus ONLY when at least one lexical/stem/phrase match exists
+                if (exactPhraseHit || lexicalHits > 0 || stemHits > 0) {
+                    val trigramSim = diceSimilarity(queryTrigrams, idxF.trigrams)
+                    if (trigramSim >= 0.18) {
+                        score += trigramSim * 4.5
+                    }
                 }
                 idxF.folder to score
             }
@@ -922,23 +949,34 @@ class FirestoreRagRepository(
 
             for (idxC in indexedChunks) {
                 var cScore = folderScore * 0.35
-                if (normQuery.length >= 4 && idxC.contentNorm.contains(normQuery)) {
+                val exactChunkHit = normQuery.length >= 4 && idxC.contentNorm.contains(normQuery)
+                if (exactChunkHit) {
                     cScore += 9.5
                 }
+                var chunkLexicalHits = 0
                 for (tok in tokens) {
                     val idf = tokenIdf[tok] ?: 1.0
-                    if (idxC.titleNorm.contains(tok)) cScore += 3.0 * idf
-                    if (idxC.kwNorm.any { it.contains(tok) }) cScore += 2.5 * idf
+                    var hit = false
+                    if (idxC.titleNorm.contains(tok)) {
+                        cScore += 3.0 * idf
+                        hit = true
+                    }
+                    if (idxC.kwNorm.any { it.contains(tok) }) {
+                        cScore += 2.5 * idf
+                        hit = true
+                    }
                     val occurrences = countOccurrences(idxC.contentNorm, tok)
                     if (occurrences > 0) {
                         cScore += minOf(occurrences * 1.6 * idf, 7.5)
+                        hit = true
                     }
+                    if (hit) chunkLexicalHits++
                 }
                 val chunkStemHits = queryStems.count { it in idxC.stems }
                 if (chunkStemHits > 0) {
                     cScore += chunkStemHits * 1.8
                 }
-                if (cScore > 1.2) {
+                if ((exactChunkHit || chunkLexicalHits > 0 || chunkStemHits > 0) && cScore > 1.2) {
                     candidateChunks.add(idxC.chunk to cScore)
                 }
             }

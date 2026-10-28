@@ -6,9 +6,12 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
-import androidx.compose.foundation.Image
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,16 +23,19 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AddAPhoto
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.OpenInBrowser
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material.icons.filled.VpnKey
@@ -52,10 +58,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -64,8 +68,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
-import com.example.R
 import com.example.data.model.AppLanguage
+import com.example.data.model.UserProfile
 import com.example.ui.theme.AmiriFontFamily
 import com.example.ui.theme.CinzelFontFamily
 import com.example.ui.theme.EgyptianCyan
@@ -79,15 +83,35 @@ import com.example.ui.theme.TextSecondary
 @Composable
 fun ApiKeyManagementDialog(
     currentApiKey: String,
+    userProfile: UserProfile = UserProfile(),
     onSaveApiKey: (String) -> Unit,
+    onUpdateLocalProfile: (displayName: String, avatarUri: Uri?) -> Unit = { _, _ -> },
     onDismiss: () -> Unit,
     appLanguage: AppLanguage = AppLanguage.ARABIC
 ) {
     val context = LocalContext.current
     var keyInput by remember { mutableStateOf(currentApiKey) }
+    var nameInput by remember(userProfile.displayName) {
+        mutableStateOf(
+            if (userProfile.displayName == "زائر ملكي") "" else userProfile.displayName
+        )
+    }
     var isKeyVisible by remember { mutableStateOf(false) }
 
     val hasKey = currentApiKey.isNotBlank()
+
+    val avatarPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            onUpdateLocalProfile(nameInput.ifBlank { userProfile.displayName }, uri)
+            Toast.makeText(
+                context,
+                if (appLanguage == AppLanguage.ARABIC) "تم تحديث صورة الحساب" else "Profile photo updated",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
 
     Dialog(onDismissRequest = onDismiss) {
         Card(
@@ -119,17 +143,17 @@ fun ApiKeyManagementDialog(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = if (appLanguage == AppLanguage.ARABIC) "مفتاح API الخاص بك" else "Your Personal API Key",
+                            text = if (appLanguage == AppLanguage.ARABIC) "حساب ومفتاح API الشخصي" else "Account & Personal API Key",
                             fontFamily = CinzelFontFamily,
                             fontWeight = FontWeight.Bold,
-                            fontSize = 17.sp,
+                            fontSize = 16.sp,
                             color = RoyalGoldLight
                         )
                     }
 
                     IconButton(
                         onClick = onDismiss,
-                        modifier = Modifier.size(32.dp)
+                        modifier = Modifier.size(48.dp)
                     ) {
                         Icon(
                             imageVector = Icons.Default.Close,
@@ -139,45 +163,67 @@ fun ApiKeyManagementDialog(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(14.dp))
-
-                // App icon badge
-                Image(
-                    painter = painterResource(id = R.drawable.ramses_user_photo),
-                    contentDescription = "Ask Ramses",
-                    modifier = Modifier
-                        .size(64.dp)
-                        .clip(RoundedCornerShape(16.dp))
-                        .border(1.5.dp, RoyalGold, RoundedCornerShape(16.dp)),
-                    contentScale = ContentScale.Crop
-                )
-
                 Spacer(modifier = Modifier.height(10.dp))
 
+                // User Account Avatar with Photo Picker
+                Box(
+                    modifier = Modifier
+                        .clickable {
+                            avatarPickerLauncher.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            )
+                        }
+                        .testTag("api_dialog_avatar_picker"),
+                    contentAlignment = Alignment.BottomEnd
+                ) {
+                    UserAccountAvatar(
+                        userProfile = userProfile,
+                        hasApiKey = hasKey,
+                        size = 72.dp,
+                        contentDescription = "صورة الحساب"
+                    )
+
+                    Box(
+                        modifier = Modifier
+                            .size(26.dp)
+                            .clip(CircleShape)
+                            .background(RoyalGold)
+                            .border(1.5.dp, PharaonicMidnight, CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.AddAPhoto,
+                            contentDescription = "اختيار صورة الحساب",
+                            tint = PharaonicMidnight,
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
                 Text(
-                    text = if (appLanguage == AppLanguage.ARABIC) "حصتك الخاصة: 1.5 مليون توكن مجاناً!" else "Your Quota: 1.5 Million Free Tokens!",
+                    text = userProfile.displayName,
                     fontFamily = AmiriFontFamily,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 17.sp,
-                    color = EgyptianCyan,
+                    fontSize = 16.sp,
+                    color = TextPrimary,
                     textAlign = TextAlign.Center
                 )
 
-                Spacer(modifier = Modifier.height(4.dp))
-
                 Text(
                     text = if (appLanguage == AppLanguage.ARABIC)
-                        "كل مستخدم يحصل على مفتاح مجاني خاص به من Google AI Studio يمنحه 1,500,000 توكن مجاناً دون استهلاك كوتا مشتركة وبأعلى سرعة معالجة."
+                        "اضغط على الصورة لاختيار صورة حسابك، وأدخل مفتاح Google AI Studio للتشغيل الفوري."
                     else
-                        "Each user receives their own free key from Google AI Studio granting 1,500,000 free tokens without shared rate limits at maximum speed.",
+                        "Tap the avatar to choose your profile photo, and enter your Google AI Studio key.",
                     fontFamily = AmiriFontFamily,
-                    fontSize = 13.sp,
+                    fontSize = 12.sp,
                     color = TextSecondary,
                     textAlign = TextAlign.Center,
-                    lineHeight = 20.sp
+                    lineHeight = 18.sp
                 )
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(14.dp))
 
                 // Status Box
                 Box(
@@ -209,7 +255,7 @@ fun ApiKeyManagementDialog(
                                 color = if (hasKey) Color(0xFF10B981) else Color(0xFFF59E0B)
                             )
                             Text(
-                                text = if (hasKey) "سعة 1.5M Token متاحة بالكامل لحسابك" else "احصل على مفتاحك المجاني في دقيقة واحدة بالأسفل",
+                                text = if (hasKey) "جميع مزايا الدردشة وتحليل الصور وGemini Live جاهزة" else "احصل على مفتاحك المجاني في دقيقة واحدة بالأسفل",
                                 fontFamily = AmiriFontFamily,
                                 fontSize = 12.sp,
                                 color = TextSecondary
@@ -218,38 +264,7 @@ fun ApiKeyManagementDialog(
                     }
                 }
 
-                // 3-Steps Guide Card
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(Color(0x1A102A43))
-                        .border(0.5.dp, EgyptianCyan.copy(alpha = 0.35f), RoundedCornerShape(14.dp))
-                        .padding(12.dp)
-                ) {
-                    Column {
-                        Text(
-                            text = "💡 كيف تحصل على مفتاحك المجاني (1.5M Token)؟",
-                            fontFamily = AmiriFontFamily,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 13.sp,
-                            color = EgyptianCyan
-                        )
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            text = "1️⃣ اضغط زر 'فتح صفحة Google AI Studio' أدناه.\n" +
-                                   "2️⃣ سجّل دخولك بحساب Google واضغط 'Create API key'.\n" +
-                                   "3️⃣ انسخ الرمز والصقه هنا واضغط 'حفظ وتفعيل'.\n\n" +
-                                   "✨ مجاني تماماً 100% وبدون أي بطاقة ائتمان أو اشتراكات.",
-                            fontFamily = AmiriFontFamily,
-                            fontSize = 12.sp,
-                            color = TextSecondary,
-                            lineHeight = 18.sp
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(14.dp))
+                Spacer(modifier = Modifier.height(12.dp))
 
                 // Direct button to get API key from Google AI Studio & Copy URL
                 Row(
@@ -261,7 +276,7 @@ fun ApiKeyManagementDialog(
                             try {
                                 val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://aistudio.google.com/apikey"))
                                 context.startActivity(intent)
-                            } catch (e: Exception) {
+                            } catch (_: Exception) {
                                 Toast.makeText(context, "افتح: aistudio.google.com/apikey", Toast.LENGTH_LONG).show()
                             }
                         },
@@ -288,9 +303,13 @@ fun ApiKeyManagementDialog(
 
                     OutlinedButton(
                         onClick = {
-                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            clipboard.setPrimaryClip(ClipData.newPlainText("AI Studio URL", "https://aistudio.google.com/apikey"))
-                            Toast.makeText(context, "تم نسخ رابط الموقع للحافظة", Toast.LENGTH_SHORT).show()
+                            val copied = runCatching {
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                clipboard?.setPrimaryClip(ClipData.newPlainText("AI Studio URL", "https://aistudio.google.com/apikey")) != null
+                            }.getOrDefault(false)
+                            if (copied) {
+                                Toast.makeText(context, "تم نسخ رابط الموقع للحافظة", Toast.LENGTH_SHORT).show()
+                            }
                         },
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = EgyptianCyan),
@@ -304,7 +323,50 @@ fun ApiKeyManagementDialog(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(14.dp))
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Optional Display Name Field
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        text = if (appLanguage == AppLanguage.ARABIC) "اسم المستخدم (اختياري):" else "Display Name (optional):",
+                        fontFamily = AmiriFontFamily,
+                        fontSize = 12.sp,
+                        color = TextSecondary
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    OutlinedTextField(
+                        value = nameInput,
+                        onValueChange = { nameInput = it },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("api_key_user_name_input"),
+                        placeholder = {
+                            Text(
+                                text = if (appLanguage == AppLanguage.ARABIC) "اسمك في الحساب..." else "Your account name...",
+                                fontFamily = AmiriFontFamily,
+                                color = TextSecondary.copy(alpha = 0.5f),
+                                fontSize = 13.sp
+                            )
+                        },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Default.Person,
+                                contentDescription = null,
+                                tint = EgyptianCyan,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = EgyptianCyan,
+                            unfocusedBorderColor = Color.White.copy(alpha = 0.2f),
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary
+                        )
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
 
                 // Input Field for API Key
                 Column(modifier = Modifier.fillMaxWidth()) {
@@ -340,20 +402,23 @@ fun ApiKeyManagementDialog(
                         },
                         trailingIcon = {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                // Paste from clipboard button
                                 IconButton(
                                     onClick = {
-                                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                        val clipData = clipboard.primaryClip
-                                        if (clipData != null && clipData.itemCount > 0) {
-                                            val pastedText = clipData.getItemAt(0).text?.toString() ?: ""
-                                            if (pastedText.isNotBlank()) {
-                                                keyInput = pastedText.trim()
-                                                Toast.makeText(context, "تم لصق المفتاح من الحافظة", Toast.LENGTH_SHORT).show()
+                                        val pastedText = runCatching {
+                                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                            val clipData = clipboard?.primaryClip
+                                            if (clipData != null && clipData.itemCount > 0) {
+                                                clipData.getItemAt(0)?.coerceToText(context)?.toString().orEmpty()
+                                            } else {
+                                                ""
                                             }
+                                        }.getOrDefault("")
+                                        if (pastedText.isNotBlank()) {
+                                            keyInput = pastedText.trim()
+                                            Toast.makeText(context, "تم لصق المفتاح من الحافظة", Toast.LENGTH_SHORT).show()
                                         }
                                     },
-                                    modifier = Modifier.size(32.dp)
+                                    modifier = Modifier.size(36.dp)
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.ContentPaste,
@@ -363,10 +428,9 @@ fun ApiKeyManagementDialog(
                                     )
                                 }
 
-                                // Toggle Visibility button
                                 IconButton(
                                     onClick = { isKeyVisible = !isKeyVisible },
-                                    modifier = Modifier.size(32.dp)
+                                    modifier = Modifier.size(36.dp)
                                 ) {
                                     Icon(
                                         imageVector = if (isKeyVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
@@ -383,6 +447,9 @@ fun ApiKeyManagementDialog(
                         keyboardActions = KeyboardActions(
                             onDone = {
                                 if (keyInput.isNotBlank()) {
+                                    if (nameInput.isNotBlank()) {
+                                        onUpdateLocalProfile(nameInput.trim(), null)
+                                    }
                                     onSaveApiKey(keyInput.trim())
                                     Toast.makeText(context, "تم حفظ وتفعيل مفتاحك بنجاح!", Toast.LENGTH_SHORT).show()
                                     onDismiss()
@@ -398,7 +465,7 @@ fun ApiKeyManagementDialog(
                     )
                 }
 
-                Spacer(modifier = Modifier.height(18.dp))
+                Spacer(modifier = Modifier.height(16.dp))
 
                 // Action buttons: Save & Clear
                 Row(
@@ -424,8 +491,11 @@ fun ApiKeyManagementDialog(
                         onClick = {
                             val trimmed = keyInput.trim()
                             if (trimmed.isNotBlank()) {
+                                if (nameInput.isNotBlank()) {
+                                    onUpdateLocalProfile(nameInput.trim(), null)
+                                }
                                 onSaveApiKey(trimmed)
-                                Toast.makeText(context, "تم تفعيل مفتاحك بحصة 1.5M توكن!", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, "تم تفعيل مفتاحك الشخصي بنجاح!", Toast.LENGTH_SHORT).show()
                                 onDismiss()
                             } else {
                                 Toast.makeText(context, "يرجى لصق مفتاح Google AI Studio", Toast.LENGTH_SHORT).show()

@@ -4,7 +4,9 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.graphics.BitmapFactory
 import android.net.Uri
+import android.util.Base64
 import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -19,13 +21,16 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.MenuBook
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Key
@@ -37,21 +42,25 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
@@ -91,8 +100,22 @@ fun ChatMessageBubble(
         contentAlignment = if (isUser) Alignment.CenterEnd else Alignment.CenterStart
     ) {
         if (isUser) {
-            // User Message Bubble
-            Box(
+            val attachedImageBitmap = remember(message.imageBase64) {
+                val b64 = message.imageBase64
+                if (b64.isNullOrBlank()) {
+                    null
+                } else {
+                    try {
+                        val bytes = Base64.decode(b64, Base64.DEFAULT)
+                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+                    } catch (_: Throwable) {
+                        null
+                    }
+                }
+            }
+
+            // User Message Bubble (Uploaded Image displayed above caption, with AI analysis directly below)
+            Column(
                 modifier = Modifier
                     .fillMaxWidth(0.85f)
                     .clip(
@@ -114,15 +137,38 @@ fun ChatMessageBubble(
                             bottomEnd = 4.dp
                         )
                     )
-                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .padding(horizontal = 14.dp, vertical = 12.dp)
             ) {
-                Text(
-                    text = message.text,
-                    fontFamily = AmiriFontFamily,
-                    fontSize = 16.sp,
-                    color = TextPrimary,
-                    lineHeight = 24.sp
-                )
+                if (attachedImageBitmap != null) {
+                    Image(
+                        bitmap = attachedImageBitmap,
+                        contentDescription = if (appLanguage == com.example.data.model.AppLanguage.ARABIC) {
+                            "الصورة المرفوعة للتحليل"
+                        } else {
+                            "Uploaded image for analysis"
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 220.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .border(1.dp, RoyalGold.copy(alpha = 0.35f), RoundedCornerShape(14.dp))
+                            .testTag("chat_uploaded_image"),
+                        contentScale = ContentScale.Crop
+                    )
+                    if (message.text.isNotBlank()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+                }
+
+                if (message.text.isNotBlank()) {
+                    Text(
+                        text = message.text,
+                        fontFamily = AmiriFontFamily,
+                        fontSize = 16.sp,
+                        color = TextPrimary,
+                        lineHeight = 24.sp
+                    )
+                }
             }
         } else if (message.isError) {
             // Royal Error / Quota Exceeded Card with Action Buttons
@@ -298,7 +344,11 @@ fun ChatMessageBubble(
                 }
             }
         } else {
-            // King Ramses II Message Card
+            val isPureGeminiPersona = message.responderPersona == "GEMINI_DEFAULT" ||
+                message.responderPersona == "CODE" ||
+                message.responderPersona == "WRITER"
+
+            // Assistant Message Card (Google Gemini for Tech/Blender/General/Image, Ask Rameses for History)
             Card(
                 modifier = Modifier
                     .fillMaxWidth(0.95f)
@@ -310,47 +360,95 @@ fun ChatMessageBubble(
                 border = androidx.compose.foundation.BorderStroke(
                     1.dp,
                     Brush.linearGradient(
-                        listOf(
-                            RoyalGold.copy(alpha = 0.6f),
-                            Color.Transparent,
-                            EgyptianCyan.copy(alpha = 0.4f)
-                        )
+                        if (isPureGeminiPersona) {
+                            listOf(
+                                Color(0xFF4285F4).copy(alpha = 0.6f),
+                                Color.Transparent,
+                                EgyptianCyan.copy(alpha = 0.45f)
+                            )
+                        } else {
+                            listOf(
+                                RoyalGold.copy(alpha = 0.6f),
+                                Color.Transparent,
+                                EgyptianCyan.copy(alpha = 0.4f)
+                            )
+                        }
                     )
                 )
             ) {
                 Column(
                     modifier = Modifier.padding(16.dp)
                 ) {
-                    // Header with Avatar and Royal Cartouche Title
+                    // Header with Responder Identity
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Image(
-                                painter = painterResource(id = R.drawable.ramses_user_photo),
-                                contentDescription = "اسأل رمسيس",
-                                modifier = Modifier
-                                    .size(36.dp)
-                                    .clip(CircleShape)
-                                    .border(1.dp, RoyalGold, CircleShape),
-                                contentScale = ContentScale.Crop
-                            )
+                            if (isPureGeminiPersona) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0x334285F4))
+                                        .border(1.dp, Color(0xFF8AB4F8), CircleShape),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.AutoAwesome,
+                                        contentDescription = "Google Gemini",
+                                        tint = Color(0xFF8AB4F8),
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            } else {
+                                Image(
+                                    painter = painterResource(id = R.drawable.ramses_user_photo),
+                                    contentDescription = "اسأل رمسيس",
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .clip(CircleShape)
+                                        .border(1.dp, RoyalGold, CircleShape),
+                                    contentScale = ContentScale.Crop
+                                )
+                            }
                             Spacer(modifier = Modifier.width(10.dp))
                             Column {
                                 Text(
-                                    text = if (appLanguage == com.example.data.model.AppLanguage.ARABIC) "اسأل رمسيس" else "Ask Rameses",
+                                    text = if (isPureGeminiPersona) {
+                                        "Google Gemini"
+                                    } else {
+                                        if (appLanguage == com.example.data.model.AppLanguage.ARABIC) "اسأل رمسيس" else "Ask Rameses"
+                                    },
                                     fontFamily = CinzelFontFamily,
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 15.sp,
-                                    color = RoyalGoldLight
+                                    color = if (isPureGeminiPersona) Color(0xFF8AB4F8) else RoyalGoldLight
                                 )
                                 Text(
-                                    text = if (message.isVoiceResponse) {
-                                        if (appLanguage == com.example.data.model.AppLanguage.ARABIC) "استجابة صوتية ملكية موجزة" else "Royal Spoken Response"
-                                    } else {
-                                        if (appLanguage == com.example.data.model.AppLanguage.ARABIC) "حكمة فرعونية أصيلة" else "Authentic Pharaonic Wisdom"
+                                    text = when {
+                                        isPureGeminiPersona -> {
+                                            if (appLanguage == com.example.data.model.AppLanguage.ARABIC) {
+                                                "مساعد ذكي متكامل • تقني ومعرفي"
+                                            } else {
+                                                "Smart AI Assistant • Technical & General"
+                                            }
+                                        }
+                                        message.isVoiceResponse -> {
+                                            if (appLanguage == com.example.data.model.AppLanguage.ARABIC) {
+                                                "استجابة صوتية ملكية موجزة"
+                                            } else {
+                                                "Royal Spoken Response"
+                                            }
+                                        }
+                                        else -> {
+                                            if (appLanguage == com.example.data.model.AppLanguage.ARABIC) {
+                                                "موسوعة التاريخ والآثار المصرية"
+                                            } else {
+                                                "Egyptian History & Relics Knowledge"
+                                            }
+                                        }
                                     },
                                     fontFamily = AmiriFontFamily,
                                     fontSize = 11.sp,
@@ -367,19 +465,23 @@ fun ChatMessageBubble(
                             ) {
                                 Icon(
                                     imageVector = Icons.AutoMirrored.Filled.VolumeUp,
-                                    contentDescription = if (appLanguage == com.example.data.model.AppLanguage.ARABIC) "استماع بصوت رمسيس الثاني" else "Listen with Rameses's voice",
-                                    tint = RoyalGold,
+                                    contentDescription = if (appLanguage == com.example.data.model.AppLanguage.ARABIC) "استماع للنص" else "Listen to response",
+                                    tint = if (isPureGeminiPersona) Color(0xFF8AB4F8) else RoyalGold,
                                     modifier = Modifier.size(20.dp)
                                 )
                             }
 
                             IconButton(
                                 onClick = {
-                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                    val clip = ClipData.newPlainText("Ramses AI", message.text)
-                                    clipboard.setPrimaryClip(clip)
-                                    val toastMsg = if (appLanguage == com.example.data.model.AppLanguage.ARABIC) "تم نسخ الحكمة الملكية" else "Copied royal message"
-                                    Toast.makeText(context, toastMsg, Toast.LENGTH_SHORT).show()
+                                    val copied = runCatching {
+                                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                                        val clip = ClipData.newPlainText("Gemini Response", message.text)
+                                        clipboard?.setPrimaryClip(clip) != null
+                                    }.getOrDefault(false)
+                                    if (copied) {
+                                        val toastMsg = if (appLanguage == com.example.data.model.AppLanguage.ARABIC) "تم نسخ النص" else "Copied text"
+                                        Toast.makeText(context, toastMsg, Toast.LENGTH_SHORT).show()
+                                    }
                                 },
                                 modifier = Modifier.size(36.dp)
                             ) {
@@ -404,10 +506,33 @@ fun ChatMessageBubble(
                         lineHeight = 26.sp
                     )
 
-                    // Grounding Sources (Cloud Firebase RAG small folders, File Search PDFs, and/or Google Search grounding)
+                    // Compact End-Only Sources List (max 4 sources: Source Name + Page Number only)
                     if (message.groundingSources.isNotEmpty()) {
-                        Spacer(modifier = Modifier.height(14.dp))
-                        val hasBookSource = message.groundingSources.any {
+                        val displayedSources = remember(message.groundingSources) {
+                            message.groundingSources
+                                .distinctBy { source ->
+                                    val segs = source.title.split("•").map { it.trim() }.filter { it.isNotEmpty() }
+                                    val book = segs.firstOrNull().orEmpty()
+                                    val page = segs.firstOrNull {
+                                        it.startsWith("الصفحة") ||
+                                            it.startsWith("صفحة") ||
+                                            it.startsWith("ص.") ||
+                                            it.startsWith("ص ") ||
+                                            it.startsWith("Page", ignoreCase = true)
+                                    }.orEmpty()
+                                    if (book.isNotEmpty() || page.isNotEmpty()) "$book|$page" else "${source.title}|${source.uri}"
+                                }
+                                .take(4)
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+                        HorizontalDivider(
+                            thickness = 0.5.dp,
+                            color = RoyalGold.copy(alpha = 0.2f)
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        val hasBookSource = displayedSources.any {
                             it.uri.startsWith("firestore://") ||
                                 it.uri.startsWith("gs://") ||
                                 it.uri.startsWith("fileSearchStores/") ||
@@ -420,37 +545,80 @@ fun ChatMessageBubble(
                                 context.getString(R.string.citations_books_and_search_en)
                             }
                         } else {
-                            "المصادر والتوثيق الحي (Google Search):"
+                            if (appLanguage == com.example.data.model.AppLanguage.ARABIC) {
+                                "المصادر:"
+                            } else {
+                                "Sources:"
+                            }
                         }
                         Text(
                             text = sourcesHeader,
                             fontFamily = AmiriFontFamily,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 12.sp,
-                            color = RoyalGold
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 10.5.sp,
+                            lineHeight = 14.sp,
+                            color = RoyalGold.copy(alpha = 0.88f)
                         )
-                        Spacer(modifier = Modifier.height(6.dp))
+                        Spacer(modifier = Modifier.height(4.dp))
 
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(3.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("message_sources_list")
                         ) {
-                            for (source in message.groundingSources.take(5)) {
+                            for (source in displayedSources) {
                                 val isCloudBookRef = source.uri.startsWith("firestore://") ||
                                     source.uri.startsWith("gs://") ||
                                     source.uri.startsWith("fileSearchStores/") ||
                                     source.uri.startsWith("projects/")
+
+                                val segments = source.title.split("•").map { it.trim() }.filter { it.isNotEmpty() }
+                                val pageSegment = segments.firstOrNull {
+                                    it.startsWith("الصفحة") ||
+                                        it.startsWith("صفحة") ||
+                                        it.startsWith("ص.") ||
+                                        it.startsWith("ص ") ||
+                                        it.startsWith("Page", ignoreCase = true)
+                                }
+                                val conciseSourceName = when {
+                                    isCloudBookRef && segments.isNotEmpty() ->
+                                        segments.firstOrNull { it != pageSegment } ?: source.title
+                                    pageSegment != null ->
+                                        segments.filterNot { it == pageSegment }.firstOrNull() ?: source.title
+                                    else -> source.title
+                                }
+                                val rawPageNumber = pageSegment
+                                    ?.replace(Regex("^(الصفحة|صفحة|ص\\.?|Page)\\s*:?\\s*", RegexOption.IGNORE_CASE), "")
+                                    ?.trim()
+                                    .orEmpty()
+                                val compactPageLabel = if (rawPageNumber.isNotEmpty()) {
+                                    if (appLanguage == com.example.data.model.AppLanguage.ARABIC) {
+                                        "ص $rawPageNumber"
+                                    } else {
+                                        "p. $rawPageNumber"
+                                    }
+                                } else {
+                                    pageSegment.orEmpty()
+                                }
+
                                 Row(
                                     modifier = Modifier
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(Color(0x33102A43))
-                                        .border(0.5.dp, EgyptianCyan.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(7.dp))
+                                        .background(Color(0x24102A43))
+                                        .border(0.5.dp, RoyalGold.copy(alpha = 0.24f), RoundedCornerShape(7.dp))
                                         .clickable {
                                             if (isCloudBookRef) {
+                                                val toastLabel = if (compactPageLabel.isNotBlank()) {
+                                                    "📚 $conciseSourceName ($compactPageLabel)"
+                                                } else {
+                                                    "📚 $conciseSourceName"
+                                                }
                                                 Toast.makeText(
                                                     context,
-                                                    "📚 ${source.title}",
-                                                    Toast.LENGTH_LONG
+                                                    toastLabel,
+                                                    Toast.LENGTH_SHORT
                                                 ).show()
                                             } else if (source.uri.isNotBlank()) {
                                                 try {
@@ -461,22 +629,52 @@ fun ChatMessageBubble(
                                                 }
                                             }
                                         }
-                                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                                        .padding(horizontal = 8.dp, vertical = 3.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Language,
-                                        contentDescription = null,
-                                        tint = EgyptianCyan,
-                                        modifier = Modifier.size(12.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text(
-                                        text = source.title.take(52),
-                                        fontFamily = AmiriFontFamily,
-                                        fontSize = 11.sp,
-                                        color = TextSecondary
-                                    )
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Icon(
+                                            imageVector = if (isCloudBookRef) Icons.AutoMirrored.Filled.MenuBook else Icons.Default.Language,
+                                            contentDescription = null,
+                                            tint = if (isCloudBookRef) RoyalGoldLight.copy(alpha = 0.85f) else EgyptianCyan,
+                                            modifier = Modifier.size(11.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(5.dp))
+                                        Text(
+                                            text = conciseSourceName,
+                                            fontFamily = AmiriFontFamily,
+                                            fontSize = 10.5.sp,
+                                            color = TextSecondary,
+                                            lineHeight = 14.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+
+                                    if (compactPageLabel.isNotEmpty()) {
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(5.dp))
+                                                .background(Color(0x28F59E0B))
+                                                .border(0.5.dp, RoyalGold.copy(alpha = 0.45f), RoundedCornerShape(5.dp))
+                                                .padding(horizontal = 6.dp, vertical = 1.dp)
+                                                .testTag("citation_page_badge")
+                                        ) {
+                                            Text(
+                                                text = compactPageLabel,
+                                                fontFamily = AmiriFontFamily,
+                                                fontWeight = FontWeight.Medium,
+                                                fontSize = 9.5.sp,
+                                                lineHeight = 12.sp,
+                                                color = RoyalGoldLight
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }

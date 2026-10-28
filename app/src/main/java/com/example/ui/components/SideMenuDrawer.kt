@@ -123,6 +123,7 @@ fun DrawerMenuItem(
 @Composable
 fun SideMenuDrawer(
     userProfile: UserProfile,
+    hasPersonalApiKey: Boolean = false,
     sessions: List<ChatSession>,
     currentSessionId: String,
     selectedGem: String = "GEMINI_DEFAULT",
@@ -137,7 +138,6 @@ fun SideMenuDrawer(
     onOpenAuthDialog: () -> Unit,
     onOpenApiKeyDialog: () -> Unit,
     onOpenRagDialog: () -> Unit,
-    onOpenRigStudioDialog: () -> Unit = {},
     onOpen3DArtifactsDialog: () -> Unit,
     onNewChatClick: () -> Unit,
     onVoiceCallClick: () -> Unit,
@@ -157,7 +157,7 @@ fun SideMenuDrawer(
         map[last7DaysHeader] = mutableListOf()
         map[olderHeader] = mutableListOf()
 
-        for (session in sessions) {
+        for (session in sessions.distinctBy { it.id }) {
             val diff = now - session.updatedAt
             when {
                 diff < oneDay -> map[todayHeader]?.add(session)
@@ -293,10 +293,11 @@ fun SideMenuDrawer(
                                 RoundedCornerShape(12.dp)
                             )
                             .clickable {
-                                onSelectGem("GEMINI_DEFAULT")
                                 onCloseDrawer()
+                                onSelectGem("GEMINI_DEFAULT")
                             }
-                            .padding(horizontal = 8.dp, vertical = 8.dp),
+                            .padding(horizontal = 8.dp, vertical = 8.dp)
+                            .testTag("drawer_gem_gemini"),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
@@ -321,10 +322,11 @@ fun SideMenuDrawer(
                                 RoundedCornerShape(12.dp)
                             )
                             .clickable {
-                                onSelectGem("RAMSES")
                                 onCloseDrawer()
+                                onSelectGem("RAMSES")
                             }
-                            .padding(horizontal = 8.dp, vertical = 8.dp),
+                            .padding(horizontal = 8.dp, vertical = 8.dp)
+                            .testTag("drawer_gem_ramses"),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
@@ -356,8 +358,8 @@ fun SideMenuDrawer(
             item(key = "drawer_item_voice_call") {
                 DrawerMenuItem(
                     icon = Icons.Default.Phone,
-                    title = if (appLanguage == AppLanguage.ARABIC) "مكالمة رمسيس الصوتية المباشرة" else "Ramses Voice Live Call",
-                    subtitle = if (appLanguage == AppLanguage.ARABIC) "تحدث بصوتك مباشرة مع عزل الصدى الذكي" else "Direct spoken dialogue with smart echo guard",
+                    title = if (appLanguage == AppLanguage.ARABIC) "مكالمة صوتية مباشرة (Gemini Live)" else "Gemini Live Voice Call",
+                    subtitle = if (appLanguage == AppLanguage.ARABIC) "تحدث بصوتك مباشرة في حوار تفاعلي حي" else "Direct real-time spoken dialogue",
                     onClick = {
                         onCloseDrawer()
                         onVoiceCallClick()
@@ -370,25 +372,12 @@ fun SideMenuDrawer(
                 DrawerMenuItem(
                     icon = Icons.Default.Description,
                     title = if (appLanguage == AppLanguage.ARABIC) "قاعدة المعرفة ورفع الملفات (RAG)" else "Knowledge Base & File Upload",
-                    subtitle = if (appLanguage == AppLanguage.ARABIC) "إضافة كتب PDF وملفات نصية خاصة لرمسيس" else "Upload custom PDF books & text files",
+                    subtitle = if (appLanguage == AppLanguage.ARABIC) "إضافة كتب PDF وملفات نصية مرجعية" else "Upload custom PDF books & text files",
                     onClick = {
                         onCloseDrawer()
                         onOpenRagDialog()
                     },
                     modifier = Modifier.testTag("drawer_rag_files_item")
-                )
-            }
-
-            item(key = "drawer_item_rig") {
-                DrawerMenuItem(
-                    icon = Icons.Default.AccountTree,
-                    title = if (appLanguage == AppLanguage.ARABIC) "استوديو الـ Rig وإضافة مجسمات (.glb)" else "3D Rig Studio & .GLB Import",
-                    subtitle = if (appLanguage == AppLanguage.ARABIC) "وضع خطوط ومفاصل الـ Rig ورفع ملفات 3D" else "Place bone lines & import custom 3D files",
-                    onClick = {
-                        onCloseDrawer()
-                        onOpenRigStudioDialog()
-                    },
-                    modifier = Modifier.testTag("drawer_rig_studio_item")
                 )
             }
 
@@ -427,8 +416,8 @@ fun SideMenuDrawer(
             item(key = "drawer_item_api_key") {
                 DrawerMenuItem(
                     icon = Icons.Default.Key,
-                    title = if (appLanguage == AppLanguage.ARABIC) "مفتاح API وحصة التوكن" else "API Key & Token Quota",
-                    subtitle = if (appLanguage == AppLanguage.ARABIC) "1.5M توكن مجاناً للحساب" else "1.5M tokens free tier",
+                    title = if (appLanguage == AppLanguage.ARABIC) "مفتاح API الشخصي" else "Personal API Key",
+                    subtitle = if (appLanguage == AppLanguage.ARABIC) "ربط مفتاح Google AI Studio والصورة الشخصية" else "Connect Google AI Studio key & profile",
                     onClick = {
                         onCloseDrawer()
                         onOpenApiKeyDialog()
@@ -599,22 +588,12 @@ fun SideMenuDrawer(
                         .padding(horizontal = 12.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(36.dp)
-                            .clip(CircleShape)
-                            .background(
-                                if (userProfile.isSignedIn) Color(0xFF1A73E8) else Color(0xFF3C4043)
-                            ),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = userProfile.displayName.take(1).uppercase(),
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 14.sp,
-                            color = Color.White
-                        )
-                    }
+                    UserAccountAvatar(
+                        userProfile = userProfile,
+                        hasApiKey = hasPersonalApiKey,
+                        size = 40.dp,
+                        contentDescription = userProfile.displayName
+                    )
 
                     Spacer(modifier = Modifier.width(10.dp))
 
@@ -628,14 +607,20 @@ fun SideMenuDrawer(
                             maxLines = 1
                         )
                         Text(
-                            text = if (userProfile.isSignedIn) {
-                                userProfile.email ?: (if (appLanguage == AppLanguage.ARABIC) "حساب متصل" else "Connected account")
-                            } else {
-                                if (appLanguage == AppLanguage.ARABIC) "تسجيل الدخول بحساب Google" else "Sign in with Google"
+                            text = when {
+                                userProfile.isSignedIn -> {
+                                    userProfile.email ?: (if (appLanguage == AppLanguage.ARABIC) "حساب متصل" else "Connected account")
+                                }
+                                hasPersonalApiKey -> {
+                                    if (appLanguage == AppLanguage.ARABIC) "متصل عبر مفتاح API الشخصي" else "Connected via Personal API Key"
+                                }
+                                else -> {
+                                    if (appLanguage == AppLanguage.ARABIC) "تسجيل الدخول بحساب Google أو API" else "Sign in with Google or API Key"
+                                }
                             },
                             fontFamily = AmiriFontFamily,
                             fontSize = 11.sp,
-                            color = if (userProfile.isSignedIn) Color(0xFF8AB4F8) else Color(0xFF9AA0A6),
+                            color = if (userProfile.isSignedIn || hasPersonalApiKey) Color(0xFF8AB4F8) else Color(0xFF9AA0A6),
                             maxLines = 1
                         )
                     }
@@ -643,7 +628,7 @@ fun SideMenuDrawer(
                     Icon(
                         imageVector = Icons.Default.Person,
                         contentDescription = null,
-                        tint = if (userProfile.isSignedIn) Color(0xFF8AB4F8) else Color(0xFF9AA0A6),
+                        tint = if (userProfile.isSignedIn || hasPersonalApiKey) Color(0xFF8AB4F8) else Color(0xFF9AA0A6),
                         modifier = Modifier.size(18.dp)
                     )
                 }

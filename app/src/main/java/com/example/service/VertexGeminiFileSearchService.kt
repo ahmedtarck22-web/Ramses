@@ -25,6 +25,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -451,7 +452,9 @@ class VertexGeminiFileSearchService(
         config: SearchInstanceConfig,
         books: List<UploadedGcsPdfBook>
     ): LinkedSearchInstance {
-        val endpoint = "${proxyBaseUrl.trimEnd('/')}/v1/rag/link-books"
+        val endpoint = "${proxyBaseUrl.trim().trimEnd('/')}/v1/rag/link-books"
+        val validUrl = endpoint.toHttpUrlOrNull()
+            ?: throw IOException("Invalid serverProxyBaseUrl (must start with https:// or http://): $proxyBaseUrl")
         val payload = JSONObject().apply {
             put("projectId", config.projectId)
             put("storageBucket", config.normalizedBucketName())
@@ -468,7 +471,7 @@ class VertexGeminiFileSearchService(
         }
 
         val reqBuilder = Request.Builder()
-            .url(endpoint)
+            .url(validUrl)
             .addHeader("Content-Type", "application/json")
             .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
 
@@ -639,11 +642,15 @@ class VertexGeminiFileSearchService(
                 val data = trimmed.removePrefix("data: ").trim()
                 if (data.isEmpty() || data == "[DONE]") continue
 
-                val frame = JSONObject(data)
+                val frame = try {
+                    JSONObject(data)
+                } catch (_: Exception) {
+                    continue
+                }
                 val candidates = frame.optJSONArray("candidates") ?: continue
                 if (candidates.length() == 0) continue
 
-                val candidate = candidates.getJSONObject(0)
+                val candidate = candidates.optJSONObject(0) ?: continue
                 val parts = candidate.optJSONObject("content")?.optJSONArray("parts")
                 if (parts != null) {
                     for (i in 0 until parts.length()) {
@@ -720,15 +727,26 @@ class VertexGeminiFileSearchService(
         } catch (e: Exception) {
             Log.e(TAG, "Vertex AI Firebase SDK generation failed, attempting Google AI fallback", e)
             // Secondary SDK fallback without gs:// fileData if Blaze billing is not yet enabled on Vertex AI
-            withTimeout(SDK_TIMEOUT_MS) {
-                val bookTitlesSummary = linkedBooks.joinToString(", ") { it.title }
-                val fallbackResp = googleAiDefaultModel.generateContent("$systemInstruction\n\n[Linked Books: $bookTitlesSummary]\n$prompt")
-                val txt = fallbackResp.text?.trim().orEmpty()
-                if (txt.isNotEmpty()) onChunk(txt)
+            try {
+                withTimeout(SDK_TIMEOUT_MS) {
+                    val bookTitlesSummary = linkedBooks.joinToString(", ") { it.title }
+                    val fallbackResp = googleAiDefaultModel.generateContent("$systemInstruction\n\n[Linked Books: $bookTitlesSummary]\n$prompt")
+                    val txt = fallbackResp.text?.trim().orEmpty()
+                    if (txt.isNotEmpty()) onChunk(txt)
+                    GroundedFileSearchResponse(
+                        answerText = txt,
+                        groundingSources = linkedBooks.map { GroundingSource(it.title, it.gcsUri) },
+                        backendUsed = "GOOGLE_AI_FIREBASE_SDK_FALLBACK"
+                    )
+                }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (fallbackErr: Exception) {
+                Log.w(TAG, "Google AI SDK secondary fallback unavailable: ${fallbackErr.message}")
                 GroundedFileSearchResponse(
-                    answerText = txt,
+                    answerText = "",
                     groundingSources = linkedBooks.map { GroundingSource(it.title, it.gcsUri) },
-                    backendUsed = "GOOGLE_AI_FIREBASE_SDK_FALLBACK"
+                    backendUsed = "FALLBACK_UNAVAILABLE"
                 )
             }
         }
@@ -741,7 +759,9 @@ class VertexGeminiFileSearchService(
         instance: LinkedSearchInstance,
         onChunk: suspend (String) -> Unit
     ): GroundedFileSearchResponse {
-        val endpoint = "${proxyBaseUrl.trimEnd('/')}/v1/rag/query"
+        val endpoint = "${proxyBaseUrl.trim().trimEnd('/')}/v1/rag/query"
+        val validUrl = endpoint.toHttpUrlOrNull()
+            ?: throw IOException("Invalid serverProxyBaseUrl (must start with https:// or http://): $proxyBaseUrl")
         val payload = JSONObject().apply {
             put("prompt", prompt)
             put("systemInstruction", systemInstruction)
@@ -749,7 +769,7 @@ class VertexGeminiFileSearchService(
         }
 
         val reqBuilder = Request.Builder()
-            .url(endpoint)
+            .url(validUrl)
             .addHeader("Content-Type", "application/json")
             .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
 

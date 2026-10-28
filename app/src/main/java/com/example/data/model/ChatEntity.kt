@@ -21,5 +21,7 @@ data class ChatMessageEntity(
     val timestamp: Long = System.currentTimeMillis(),
     val isVoiceResponse: Boolean = false,
     val isError: Boolean = false,
-    val groundingSourcesJson: String = ""
+    val groundingSourcesJson: String = "",
+    val imageBase64: String? = null,
+    val responderPersona: String = ""
 )

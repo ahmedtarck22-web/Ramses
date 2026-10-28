@@ -51,6 +51,7 @@ import com.example.ui.theme.TextSecondary
 @Composable
 fun RamsesHeader(
     hasPersonalApiKey: Boolean,
+    userProfile: com.example.data.model.UserProfile = com.example.data.model.UserProfile(),
     appLanguage: AppLanguage = AppLanguage.ARABIC,
     selectedModelName: String = "gemini-3.1-flash-lite",
     onModelClick: () -> Unit = {},
@@ -67,7 +68,8 @@ fun RamsesHeader(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 14.dp, vertical = 8.dp),
+            .background(Color.Black)
+            .padding(horizontal = 14.dp, vertical = 4.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -75,9 +77,9 @@ fun RamsesHeader(
         IconButton(
             onClick = onMenuClick,
             modifier = Modifier
-                .size(42.dp)
+                .size(48.dp)
                 .clip(CircleShape)
-                .background(Color(0x1AFFFFFF))
+                .background(Color(0xFF141414))
                 .testTag("menu_button")
         ) {
             Icon(
@@ -93,9 +95,9 @@ fun RamsesHeader(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
                 .clip(RoundedCornerShape(20.dp))
-                .background(Color(0xFF10192A))
+                .background(Color(0xFF0C0C0C))
                 .border(1.dp, RoyalGold.copy(alpha = 0.45f), RoundedCornerShape(20.dp))
-                .padding(horizontal = 14.dp, vertical = 6.dp),
+                .padding(horizontal = 14.dp, vertical = 5.dp),
             horizontalArrangement = Arrangement.Center
         ) {
             Image(
@@ -119,21 +121,18 @@ fun RamsesHeader(
             )
         }
 
-        // 3. End Action: Profile Avatar (Language & 3D toggles moved inside drawer settings per user request)
+        // 3. End Action: User Account Profile Avatar
         IconButton(
             onClick = onProfileClick,
             modifier = Modifier
-                .size(40.dp)
-                .clip(CircleShape)
-                .background(Color(0x2A1A73E8))
-                .border(1.dp, Color(0xFF4285F4).copy(alpha = 0.6f), CircleShape)
+                .size(48.dp)
                 .testTag("profile_button")
         ) {
-            Icon(
-                imageVector = Icons.Default.Person,
-                contentDescription = if (appLanguage == AppLanguage.ARABIC) "الملف الشخصي والحسابات" else "Profile & Account",
-                tint = Color(0xFF8AB4F8),
-                modifier = Modifier.size(20.dp)
+            UserAccountAvatar(
+                userProfile = userProfile,
+                hasApiKey = hasPersonalApiKey,
+                size = 38.dp,
+                contentDescription = if (appLanguage == AppLanguage.ARABIC) "الملف الشخصي والحسابات" else "Profile & Account"
             )
         }
     }
